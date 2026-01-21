@@ -10,7 +10,8 @@ import {
   Tag, 
   Wallet, 
   BarChart3,
-  LogOut 
+  LogOut,
+  Bot
 } from "lucide-react"
 import { signOut } from "next-auth/react"
 
@@ -19,6 +20,11 @@ const navItems = [
     label: "Dashboard",
     href: "/dashboard",
     icon: LayoutDashboard,
+  },
+  {
+    label: "AI Assistant",
+    href: "/ai-assistant",
+    icon: Bot,
   },
   {
     label: "Books",

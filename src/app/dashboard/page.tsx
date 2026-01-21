@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
 import { AppLayout } from "@/components/layout/app-layout"
-import { BookOpen, FolderGit2, Wallet, BarChart3, Plus, Archive, Eye } from "lucide-react"
+import { BookOpen, FolderGit2, Wallet, BarChart3, Plus, Archive, Eye, Bot, Sparkles } from "lucide-react"
 
 export default async function DashboardPage() {
   const session = await getAuthSession()

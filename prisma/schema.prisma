@@ -24,6 +24,7 @@ model User {
   books         Book[]
   accounts      Account[]
   sessions      Session[]
+  chatMessages  ChatMessage[]
 
   @@map("users")
 }
@@ -126,4 +127,17 @@ model VerificationToken {
 
   @@unique([identifier, token])
   @@map("verification_tokens")
+}
+
+// Chat Message model for AI assistant conversation history
+model ChatMessage {
+  id        String   @id @default(cuid())
+  role      String   // "user" or "assistant"
+  content   String
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("chat_messages")
 }

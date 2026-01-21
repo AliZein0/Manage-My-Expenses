@@ -12,7 +12,7 @@ const bookSchema = z.object({
     .default("USD")
     .refine((val) => {
       // List of common valid currency codes
-      const validCurrencies = ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY', 'INR', 'MXN', 'BRL', 'ZAR', 'RUB', 'KRW', 'SGD', 'HKD', 'NZD', 'SEK', 'NOK', 'DKK', 'PLN', 'TRY', 'AED', 'SAR', 'ILS', 'THB', 'MYR', 'IDR', 'PHP', 'VND', 'TRY', 'ARS', 'CLP', 'COP', 'PEN', 'UYU'];
+      const validCurrencies = ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY', 'INR', 'MXN', 'BRL', 'ZAR', 'RUB', 'KRW', 'SGD', 'HKD', 'NZD', 'SEK', 'NOK', 'DKK', 'PLN', 'CZK', 'HUF', 'TRY', 'TWD', 'THB', 'IDR', 'MYR', 'PHP', 'VND', 'ILS', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR', 'JOD', 'LBP', 'EGP', 'NGN', 'CLP', 'COP', 'PEN', 'ARS', 'UYU'];
       return validCurrencies.includes(val.toUpperCase());
     }, { message: "Invalid currency code. Please use a valid ISO 4217 currency code (e.g., USD, EUR, GBP)" }),
 })

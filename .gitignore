@@ -40,8 +40,38 @@ prisma/dev.db-journal
 # Logs
 *.log
 
+# Build artifacts
+tsconfig.tsbuildinfo
+*.backup
+
 # Runtime data
 pids
 *.pid
 *.seed
 *.pid.lock
+
+# Markdown files (documentation, notes, summaries)
+*.md
+
+# Test files in scripts directory (excluding essential project scripts)
+scripts/test-*.js
+scripts/check-*.js
+scripts/debug-*.js
+scripts/demo-*.js
+scripts/diagnose-*.js
+scripts/verify-*.js
+scripts/find-*.js
+scripts/get-*.js
+scripts/live-*.js
+scripts/show-*.js
+
+# Keep essential project scripts
+!scripts/init-db.js
+!scripts/setup-check.js
+!scripts/setup-demo.js
+!scripts/create-database.js
+!scripts/create-db.sql
+!scripts/create-test-data.js
+!scripts/create-test-user.js
+!scripts/create-category-work.js
+!scripts/create-expense-direct.js

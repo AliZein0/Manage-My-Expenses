@@ -4,6 +4,7 @@ import "./globals.css"
 import { AuthProvider } from "@/components/providers/auth-provider"
 import { QueryProvider } from "@/components/providers/query-provider"
 import { Toaster } from "@/components/ui/toaster"
+import { AIFloatWidget } from "@/components/ai-assistant/ai-assistant-float"
 
 const inter = Inter({ subsets: ["latin"] })
 
@@ -23,6 +24,7 @@ export default function RootLayout({
         <AuthProvider>
           <QueryProvider>
             {children}
+            <AIFloatWidget />
             <Toaster />
           </QueryProvider>
         </AuthProvider>

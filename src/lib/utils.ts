@@ -8,7 +8,7 @@ export function cn(...inputs: ClassValue[]) {
 export function formatCurrency(amount: number, currency: string = "USD") {
   try {
     // Validate currency code
-    const validCurrencies = ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY', 'INR', 'MXN', 'BRL', 'ZAR', 'RUB', 'KRW', 'SGD', 'HKD', 'NZD', 'SEK', 'NOK', 'DKK', 'PLN', 'TRY', 'AED', 'SAR', 'ILS', 'THB', 'MYR', 'IDR', 'PHP', 'VND', 'TRY', 'ARS', 'CLP', 'COP', 'PEN', 'UYU'];
+    const validCurrencies = ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY', 'INR', 'MXN', 'BRL', 'ZAR', 'RUB', 'KRW', 'SGD', 'HKD', 'NZD', 'SEK', 'NOK', 'DKK', 'PLN', 'CZK', 'HUF', 'TRY', 'TWD', 'THB', 'IDR', 'MYR', 'PHP', 'VND', 'ILS', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR', 'JOD', 'LBP', 'EGP', 'NGN', 'CLP', 'COP', 'PEN', 'ARS', 'UYU'];
     
     if (!validCurrencies.includes(currency.toUpperCase())) {
       throw new Error(`Invalid currency: ${currency}`);

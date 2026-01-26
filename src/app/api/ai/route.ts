@@ -236,6 +236,16 @@ async function executeDirectSQLWithValidation(query: string, userBooks: any[] = 
           throw new Error(`Invalid categoryId: "${categoryId}". Category ID must be a valid UUID, not a category name.`);
         }
       }
+      
+      // Check if description is not a UUID (in case AI generates wrong query)
+      const descriptionMatch = query.match(/description\s*=\s*['"]([^'"]+)['"]/i);
+      if (descriptionMatch && descriptionMatch[1]) {
+        const description = descriptionMatch[1];
+        const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (uuidPattern.test(description)) {
+          throw new Error(`Invalid description`);
+        }
+      }
     }
 
     // Validate category creation - check for valid bookId and duplicates
@@ -266,15 +276,37 @@ async function executeDirectSQLWithValidation(query: string, userBooks: any[] = 
       if (categoryNameMatch && categoryNameMatch[1]) {
         const newCategoryName = categoryNameMatch[1];
         
+        // Validate that the category name is not a UUID
+        const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (uuidPattern.test(newCategoryName)) {
+          throw new Error(`Category already exists in this book`);
+        }
+        
         // Extract bookId from the query to check for duplicates within the same book
-        const bookIdMatch = query.match(/bookId\s*=\s*['"]([^'"]+)['"]/i);
-        if (bookIdMatch) {
-          const bookId = bookIdMatch[1];
+        // The bookId is the 4th value in the VALUES clause (after id, name, description)
+        // Pattern: VALUES (UUID(), 'category-name', '', 'book-id', ...)
+        const valuesMatch = query.match(/VALUES\s*\(\s*UUID\(\)\s*,\s*'[^']+'\s*,\s*'[^']+'\s*,\s*'([^']+)'/);
+        if (valuesMatch) {
+          const bookId = valuesMatch[1];
+          
+          console.log('Category duplicate check:');
+          console.log('  newCategoryName:', newCategoryName);
+          console.log('  bookId from query:', bookId);
+          console.log('  categories:', categories.map(c => ({ name: c.name, bookId: c.bookId })));
+          console.log('  categories.length:', categories.length);
           
           // Check if a category with the same name already exists in the same book
           const duplicateCategory = categories.find(cat => 
             cat.name.toLowerCase() === newCategoryName.toLowerCase() && cat.bookId === bookId
           );
+          
+          console.log('  duplicateCategory:', duplicateCategory);
+          console.log('  Match check:');
+          categories.forEach(cat => {
+            const nameMatch = cat.name.toLowerCase() === newCategoryName.toLowerCase();
+            const bookMatch = cat.bookId === bookId;
+            console.log(`    ${cat.name} (bookId: ${cat.bookId}): nameMatch=${nameMatch}, bookMatch=${bookMatch}`);
+          });
           
           if (duplicateCategory) {
             throw new Error(`Category already exists in this book`);
@@ -301,6 +333,12 @@ async function executeDirectSQLWithValidation(query: string, userBooks: any[] = 
       const bookNameMatch = query.match(/VALUES\s*\(\s*UUID\(\)\s*,\s*'([^']+)'/);
       if (bookNameMatch && bookNameMatch[1]) {
         const newBookName = bookNameMatch[1];
+        
+        // Validate that the book name is not a UUID
+        const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (uuidPattern.test(newBookName)) {
+          throw new Error(`Book already exists`);
+        }
         
         // Check if a book with the same name already exists
         const duplicateBook = userBooks.find(book => 

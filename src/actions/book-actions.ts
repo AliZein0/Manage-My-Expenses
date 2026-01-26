@@ -56,6 +56,12 @@ export async function createBook(formData: FormData) {
     return { success: true }
   } catch (error) {
     console.error("Book creation error:", error)
+    
+    // Check if it's a unique constraint violation (duplicate book name)
+    if (error instanceof Error && error.message.includes('Unique constraint failed')) {
+      return { error: "A book with this name already exists" }
+    }
+    
     return { error: "Failed to create book" }
   }
 }

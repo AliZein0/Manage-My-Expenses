@@ -27,9 +27,9 @@ export class RAGService {
       'Cash', 'Credit Card', 'Wire Transfer', 'PayPal', 'Other'
     ],
     requiredFields: {
-      books: ['name', 'userId', 'currency'],
+      books: ['name', 'userId'],
       categories: ['name', 'bookId'],
-      expenses: ['amount', 'date', 'categoryId', 'paymentMethod']
+      expenses: ['amount', 'categoryId']
     }
   }
 
@@ -90,34 +90,40 @@ export class RAGService {
         },
         {
           id: 'validation-required-fields',
-          content: `REQUIRED FIELDS: Books need name, userId, currency. Categories need name, bookId. Expenses need amount, date, categoryId, paymentMethod. Always include these when generating INSERT queries.`,
+          content: `REQUIRED FIELDS: Books need name, userId. Categories need name, bookId. Expenses need amount, categoryId. Always include these when generating INSERT queries.`,
           metadata: { type: 'validation', rule: 'required-fields' }
         },
         {
           id: 'response-format-insert',
-          content: `RESPONSE FORMAT FOR INSERT OPERATIONS: When generating SQL INSERT queries, the system will extract and display only the record values in a clean JSON format. For example: "✅ Successfully added: amount: 300.00, date: CURDATE(), description: , categoryId: 43108e76-f1ed-11f0-9c01-20bd1d505f09, paymentMethod: Other, isDisabled: false". The response should be concise and show only the added record values without row counts or query type information.`,
+          content: `RESPONSE FORMAT FOR INSERT OPERATIONS: When generating SQL INSERT queries, DO NOT generate success messages yourself. Your ONLY job is to generate SQL queries in code blocks. The system will execute your SQL query and generate the success message. For example, after executing your INSERT query, the system will show: "✅ Successfully added: amount: 300.00, date: CURDATE(), description: , categoryId: 43108e76-f1ed-11f0-9c01-20bd1d505f09, paymentMethod: Other, isDisabled: false". NEVER generate success messages like "✅ Successfully added" or "Successfully created" - only generate SQL queries.`,
           metadata: { type: 'response-format', operation: 'insert' }
         },
         {
           id: 'response-format-select',
-          content: `RESPONSE FORMAT FOR SELECT OPERATIONS: When executing SELECT queries, the system displays results as: 📊 Found X records: followed by a JSON array of the data. For example: 📊 Found 1 records: [{"name": "B1", "currency": "LBP"}]. Keep responses clean and data-focused.`,
+          content: `RESPONSE FORMAT FOR SELECT OPERATIONS: When executing SELECT queries, the system displays results as: 📊 Found X records: followed by a JSON code block with the data. For example: 📊 Found 1 records:\n\`\`\`json\n[{"name": "B1", "currency": "LBP"}]\n\`\`\`. Keep responses clean and data-focused.`,
           metadata: { type: 'response-format', operation: 'select' }
         },
         {
           id: 'response-format-user-preference',
-          content: `USER PREFERRED RESPONSE FORMAT: The user expects responses that show NAMES instead of IDs and use natural language, not JavaScript/JSON scripts. For example: "✅ Successfully added: $300.00 expense to Groceries category in B1 book" instead of showing raw database IDs. Always use book names, category names, and user-friendly descriptions. Avoid showing UUIDs, raw database field names, or JSON structures. Responses should be conversational and informative. YOU must resolve IDs to names using your knowledge of the user's data from the context provided.`,
+          content: `USER PREFERRED RESPONSE FORMAT: The user expects responses that show NAMES instead of IDs and use natural language. However, your job is ONLY to generate SQL queries in code blocks. The system will execute your SQL and generate the success message with names instead of IDs. For example: You generate \`\`\`sql\nINSERT INTO expenses (...) VALUES (UUID(), 100.00, CURDATE(), '', 'category-id', 'Other', false, NOW(), NOW())\n\`\`\` and the system will show "✅ Successfully added: $100.00 expense to Groceries category in B1 book". YOU must resolve IDs to names in your SQL generation by using the correct IDs from the user context provided. For SELECT operations, the system will display results as JSON code blocks with resolved names. NEVER generate success messages yourself.`,
           metadata: { type: 'response-format', userPreference: true }
         },
         {
           id: 'response-format-examples',
           content: `RESPONSE FORMAT EXAMPLES: 
-- GOOD: "✅ Successfully added: $300.00 expense to Groceries category in B1 book"
-- GOOD: "📊 Found 1 book: B1 with currency LBP"
-- GOOD: "✅ Successfully added: C5 category to B1 book"
-- GOOD: "📊 Found 1 expense: $50.00 for 'Weekly groceries' in Groceries category in B1 book"
-- BAD: "✅ Successfully added: amount: 300.00, date: CURDATE(), description: , categoryId: 43108e76-f1ed-11f0-9c01-20bd1d505f09, paymentMethod: Other, isDisabled: false"
-- BAD: Showing raw UUIDs like 43108e76-f1ed-11f0-9c01-20bd1d505f09
-- BAD: Showing database field names like "categoryId", "bookId", "isDisabled"
+CRITICAL: Your job is ONLY to generate SQL queries in code blocks. The system will execute them and generate success messages. NEVER generate success messages yourself.
+
+GOOD EXAMPLES (what you should generate):
+- For book creation: \`\`\`sql\nINSERT INTO books (id, name, description, currency, isArchived, userId, createdAt, updatedAt) VALUES (UUID(), 'Test', '', 'USD', false, 'user-id', NOW(), NOW())\n\`\`\`
+- For category creation: \`\`\`sql\nINSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, createdAt, updatedAt) VALUES (UUID(), 'C1', '', 'book-id', '', '', false, NOW(), NOW())\n\`\`\`
+- For expense creation: \`\`\`sql\nINSERT INTO expenses (id, amount, date, description, categoryId, paymentMethod, isDisabled, createdAt, updatedAt) VALUES (UUID(), 100.00, CURDATE(), '', 'category-id', 'Other', false, NOW(), NOW())\n\`\`\`
+- For SELECT queries: \`\`\`sql\nSELECT * FROM books WHERE userId = 'user-id'\n\`\`\`
+
+BAD EXAMPLES (what you should NOT generate):
+- ❌ "✅ Successfully added: $300.00 expense to Groceries category in B1 book" (without SQL first)
+- ❌ "📊 Found 1 book: B1 with currency LBP" (without SQL first)
+- ❌ Any success message without first generating the SQL query in code blocks
+- ❌ "Successfully created" or "✅ Successfully added" (never generate these)
 
 SQL QUERY GUIDELINES:
 - For expenses: Use JOINs through categories to books for user filtering
@@ -127,28 +133,29 @@ SQL QUERY GUIDELINES:
 - For books: Direct WHERE clause on userId
 - Example: SELECT * FROM books WHERE userId = 'user-id'
 
-CRITICAL: YOU must resolve IDs to names using the user context provided. Look at the user's books and categories in the context and replace IDs with their corresponding names. Never show raw database IDs or field names.`,
+CRITICAL: For INSERT operations, YOU must resolve IDs to names using the user context provided. Look at the user's books and categories in the context and replace IDs with their corresponding names. Never show raw database IDs or field names in INSERT responses.
+CRITICAL: For SELECT operations, the system will handle displaying results as JSON code blocks. Focus on generating correct SQL queries with proper JOINs and WHERE clauses.`,
           metadata: { type: 'response-format', examples: true }
         },
         {
           id: 'response-format-natural-language',
-          content: `NATURAL LANGUAGE REQUIREMENT: Responses must be conversational and informative, not JavaScript/JSON scripts. Never output raw JSON arrays, database records, or code blocks as the main response. Use complete sentences and explain what was done or found in plain English. For example: "I found 1 book named B1 with currency LBP" instead of "📊 Found 1 records: [{"name": "B1", "currency": "LBP"}]".`,
+          content: `NATURAL LANGUAGE REQUIREMENT: Your job is ONLY to generate SQL queries in code blocks. The system will execute them and generate natural language responses. For INSERT operations, generate the SQL query and the system will show: "✅ Successfully added: $300.00 expense to Groceries category in B1 book". For SELECT operations, generate the SQL query and the system will display results as JSON code blocks. Focus on generating correct SQL queries rather than formatting the output. NEVER generate success messages yourself.`,
           metadata: { type: 'response-format', naturalLanguage: true }
         },
         {
           id: 'ai-response-formatting-responsibility',
-          content: `AI RESPONSE FORMATTING RESPONSIBILITY: When you generate SQL queries, you are also responsible for how the final response will be formatted. The system will execute your SQL and show results, but YOU must ensure your response instructions lead to natural language with names instead of IDs. Use the user context to resolve IDs: if you see bookId 'b01ccdf3-f1ec-11f0-9c01-20bd1d505f09' in the context, know that it refers to book 'B1' and mention 'B1' in your response, not the ID.`,
+          content: `AI RESPONSE FORMATTING RESPONSIBILITY: Your ONLY job is to generate SQL queries in code blocks. When you generate SQL INSERT queries, you are responsible for using the correct IDs from the user context. The system will execute your SQL and show the success message with names instead of IDs. Use the user context to resolve IDs: if you see bookId 'b01ccdf3-f1ec-11f0-9c01-20bd1d505f09' in the context, know that it refers to book 'B1' and use that ID in your SQL query. The system will convert it to "B1" in the success message. For SELECT queries, the system will handle displaying results as JSON code blocks - focus on generating correct SQL with proper JOINs and WHERE clauses. NEVER generate success messages yourself - only generate SQL queries.`,
           metadata: { type: 'response-format', aiResponsibility: true }
         },
         {
           id: 'sql-query-generation-rules',
-          content: `SQL QUERY GENERATION RULES: When generating SELECT queries for user data, you MUST use proper JOINs to filter by userId. The expenses table doesn't have userId directly - you must JOIN through categories to books. Example: SELECT SUM(amount) FROM expenses e JOIN categories c ON e.categoryId = c.id JOIN books b ON c.bookId = b.id WHERE b.userId = 'user-id'. For categories: SELECT COUNT(*) FROM categories c JOIN books b ON c.bookId = b.id WHERE b.userId = 'user-id'. For books: SELECT * FROM books WHERE userId = 'user-id'. The system will auto-fix simple queries, but you should generate correct queries from the start.`,
+          content: `SQL QUERY GENERATION RULES: Your ONLY job is to generate SQL queries in code blocks. When generating SELECT queries for user data, you MUST use proper JOINs to filter by userId. The expenses table doesn't have userId directly - you must JOIN through categories to books. Example: SELECT SUM(amount) FROM expenses e JOIN categories c ON e.categoryId = c.id JOIN books b ON c.bookId = b.id WHERE b.userId = 'user-id'. For categories: SELECT COUNT(*) FROM categories c JOIN books b ON c.bookId = b.id WHERE b.userId = 'user-id'. For books: SELECT * FROM books WHERE userId = 'user-id'. The system will auto-fix simple queries, but you should generate correct queries from the start. NEVER generate success messages yourself.`,
           metadata: { type: 'sql-generation', rules: true }
         },
         {
-          id: 'duplicate-book-validation',
-          content: `DUPLICATE BOOK VALIDATION: When creating a new book, you MUST check if a book with the same name already exists for the user. The system will validate this and refuse to create duplicate book names. If a book with the same name already exists, respond with "Book already exists" instead of generating an SQL query. Always check YOUR BOOKS section first before creating a new book.`,
-          metadata: { type: 'validation', rule: 'duplicate-book' }
+          id: 'duplicate-validation',
+          content: `DUPLICATE VALIDATION: When creating a new book or category, the system will automatically check if a duplicate already exists. For books: checks if a book with the same name already exists for the user. For categories: checks if a category with the same name already exists in the same book. If a duplicate is found, the system will refuse to create it and return an error. Your job is ONLY to generate SQL queries - the system will handle all validation including duplicate checking. NEVER generate success messages like "✅ Successfully added" - only generate SQL queries.`,
+          metadata: { type: 'validation', rule: 'duplicate' }
         }
       ];
 

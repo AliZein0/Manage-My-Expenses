@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Bot, Send, Loader2, Sparkles, MessageSquare, X, Maximize2, Minimize2 } from "lucide-react"
 import { useToast } from "@/components/ui/use-toast"
 import { useRouter } from "next/navigation"
+import { VoiceInputButton } from "@/components/voice/voice-input-button"
 
 interface Suggestion {
   text: string
@@ -336,7 +337,16 @@ export function AIFloatWidget() {
             </div>
 
             {/* Input */}
-            <div className="flex gap-2">
+            <div className="flex gap-2 items-center">
+              <VoiceInputButton
+                onTranscript={(transcript) => {
+                  setInput(transcript)
+                  setTimeout(() => sendMessage(), 100)
+                }}
+                disabled={isLoading}
+                size="sm"
+                className="shrink-0"
+              />
               <Input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}

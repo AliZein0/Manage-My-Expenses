@@ -289,24 +289,10 @@ async function executeDirectSQLWithValidation(query: string, userBooks: any[] = 
         if (valuesMatch) {
           const bookId = valuesMatch[1];
           
-          console.log('Category duplicate check:');
-          console.log('  newCategoryName:', newCategoryName);
-          console.log('  bookId from query:', bookId);
-          console.log('  categories:', categories.map(c => ({ name: c.name, bookId: c.bookId })));
-          console.log('  categories.length:', categories.length);
-          
           // Check if a category with the same name already exists in the same book
           const duplicateCategory = categories.find(cat => 
             cat.name.toLowerCase() === newCategoryName.toLowerCase() && cat.bookId === bookId
           );
-          
-          console.log('  duplicateCategory:', duplicateCategory);
-          console.log('  Match check:');
-          categories.forEach(cat => {
-            const nameMatch = cat.name.toLowerCase() === newCategoryName.toLowerCase();
-            const bookMatch = cat.bookId === bookId;
-            console.log(`    ${cat.name} (bookId: ${cat.bookId}): nameMatch=${nameMatch}, bookMatch=${bookMatch}`);
-          });
           
           if (duplicateCategory) {
             throw new Error(`Category already exists in this book`);

@@ -21,7 +21,7 @@ function CreateExpenseForm() {
   const [categories, setCategories] = useState<any[]>([])
   const [formData, setFormData] = useState({
     amount: "",
-    date: new Date().toISOString().split('T')[0],
+    date: new Date().toISOString().slice(0, 16), // Include time up to minutes
     description: "",
     paymentMethod: "Cash",
     categoryId: "",
@@ -36,10 +36,10 @@ function CreateExpenseForm() {
     try {
       const result = await getCategories()
       if (result.categories) {
-        // Filter categories by bookId if provided
-        let filteredCategories = result.categories
+        // Filter out default categories and filter by bookId if provided
+        let filteredCategories = (result.categories as any[]).filter(cat => !cat.isDefault)
         if (bookId) {
-          filteredCategories = result.categories.filter(cat => cat.bookId === bookId)
+          filteredCategories = filteredCategories.filter(cat => cat.bookId === bookId)
         }
         setCategories(filteredCategories)
         
@@ -61,15 +61,36 @@ function CreateExpenseForm() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+
+    // Validate required fields
+    if (!formData.amount || !formData.categoryId) {
+      toast({
+        title: "Validation Error",
+        description: "Please fill in all required fields",
+        variant: "destructive",
+      })
+      return
+    }
+
+    // Validate amount is positive
+    const amount = parseFloat(formData.amount)
+    if (isNaN(amount) || amount <= 0) {
+      toast({
+        title: "Validation Error",
+        description: "Amount must be a positive number",
+        variant: "destructive",
+      })
+      return
+    }
+
     // Validate date is not in the future
     const selectedDate = new Date(formData.date)
     const today = new Date()
-    
+
     // Compare only the date part (year, month, day) to avoid timezone issues
     const todayDateOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate())
     const selectedDateOnly = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate())
-    
+
     // Allow today, but not tomorrow or later
     if (selectedDateOnly > todayDateOnly) {
       toast({
@@ -82,31 +103,34 @@ function CreateExpenseForm() {
 
     setIsLoading(true)
 
-    const formDataObj = new FormData()
-    formDataObj.append("amount", formData.amount)
-    formDataObj.append("date", formData.date)
-    formDataObj.append("description", formData.description)
-    formDataObj.append("paymentMethod", formData.paymentMethod)
-    formDataObj.append("categoryId", formData.categoryId)
+    try {
+      // Create regular expense
+      const formDataObj = new FormData()
+      formDataObj.append("amount", formData.amount)
+      formDataObj.append("date", formData.date)
+      formDataObj.append("description", formData.description)
+      formDataObj.append("paymentMethod", formData.paymentMethod)
+      formDataObj.append("categoryId", formData.categoryId)
 
-    const result = await createExpense(formDataObj)
+      const result = await createExpense(formDataObj)
 
-    if (result.error) {
-      toast({
-        title: "Error",
-        description: result.error,
-        variant: "destructive",
-      })
-    } else {
-      toast({
-        title: "Success",
-        description: "Expense added successfully!",
-      })
-      router.push("/expenses")
-      router.refresh()
+      if (result.error) {
+        toast({
+          title: "Error",
+          description: result.error,
+          variant: "destructive",
+        })
+      } else {
+        toast({
+          title: "Success",
+          description: "Expense added successfully!",
+        })
+        router.push("/expenses")
+        router.refresh()
+      }
+    } finally {
+      setIsLoading(false)
     }
-
-    setIsLoading(false)
   }
 
   return (
@@ -150,14 +174,14 @@ function CreateExpenseForm() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="date">Date *</Label>
+                <Label htmlFor="date">Date & Time *</Label>
                 <Input
                   id="date"
-                  type="date"
+                  type="datetime-local"
                   value={formData.date}
                   onChange={(e) => setFormData({ ...formData, date: e.target.value })}
                   required
-                  max={new Date().toISOString().split('T')[0]}
+                  max={new Date().toISOString().slice(0, 16)}
                 />
               </div>
 

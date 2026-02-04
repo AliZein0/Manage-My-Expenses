@@ -138,7 +138,9 @@ export async function getCategoryBreakdown(bookId?: string) {
         const entry = categoryMap.get(normalizedName)
         entry.total += total
         entry.count += count
-        entry.books.add(category.book.name)
+        if (category.book) {
+          entry.books.add(category.book.name)
+        }
       }
     })
 
@@ -297,7 +299,7 @@ export async function getDetailedReport(filters: {
 
     // Calculate totals
     const totalAmount = expenses.reduce((sum, exp) => sum + exp.amount, 0)
-    const currency = expenses.length > 0 ? expenses[0].category.book.currency : "USD"
+    const currency = expenses.length > 0 && expenses[0].category.book ? expenses[0].category.book.currency : "USD"
 
     // Group by category for breakdown
     const categoryMap = new Map<string, any>()
@@ -327,5 +329,106 @@ export async function getDetailedReport(filters: {
   } catch (error) {
     console.error("Detailed report error:", error)
     return { error: "Failed to fetch detailed report" }
+  }
+}
+
+export async function getDashboardSummary() {
+  const session = await getAuthSessionEdge()
+  if (!session?.user?.id) {
+    return { error: "Unauthorized - Please log in first" }
+  }
+
+  const prisma = getPrismaClient()
+
+  // Verify user exists in database
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+  })
+
+  if (!user) {
+    return { error: "User not found in database" }
+  }
+
+  try {
+    // Get all active books for the user
+    const books = await prisma.book.findMany({
+      where: {
+        userId: session.user.id,
+        isArchived: false,
+      },
+      include: {
+        categories: {
+          where: {
+            isDisabled: false,
+          },
+          include: {
+            expenses: {
+              where: {
+                isDisabled: false,
+              },
+            },
+          },
+        },
+      },
+    })
+
+    // Calculate totals
+    const totalBooks = books.length
+    const totalCategories = books.reduce((sum, book) => sum + book.categories.length, 0)
+    const totalExpenses = books.reduce(
+      (sum, book) => sum + book.categories.reduce((catSum, cat) => catSum + cat.expenses.length, 0),
+      0
+    )
+    const totalAmount = books.reduce(
+      (sum, book) => sum + book.categories.reduce((catSum, cat) => catSum + cat.expenses.reduce((expSum, exp) => expSum + exp.amount, 0), 0),
+      0
+    )
+
+    // Get current month expenses
+    const now = new Date()
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+
+    const currentMonthExpenses = await prisma.expense.findMany({
+      where: {
+        isDisabled: false,
+        date: {
+          gte: startOfMonth,
+          lte: endOfMonth,
+        },
+        category: {
+          isDisabled: false,
+          book: {
+            userId: session.user.id,
+            isArchived: false,
+          },
+        },
+      },
+      include: {
+        category: {
+          include: {
+            book: true,
+          },
+        },
+      },
+      orderBy: { date: "desc" },
+      take: 5, // Recent expenses
+    })
+
+    const currentMonthTotal = currentMonthExpenses.reduce((sum, exp) => sum + exp.amount, 0)
+
+    return {
+      summary: {
+        totalBooks,
+        totalCategories,
+        totalExpenses,
+        totalAmount,
+        currentMonthTotal,
+        recentExpenses: currentMonthExpenses,
+      },
+    }
+  } catch (error) {
+    console.error("Dashboard summary error:", error)
+    return { error: "Failed to fetch dashboard summary" }
   }
 }

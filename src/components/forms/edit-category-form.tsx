@@ -8,8 +8,10 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { CategoryIcon } from "@/components/ui/category-icon"
 import { toast } from "@/components/ui/use-toast"
-import { ArrowLeft } from "lucide-react"
+import { ArrowLeft, Home, Car, Utensils, ShoppingBag, Heart, Briefcase, GraduationCap, Gamepad2, Film, Music, Coffee, Zap, Wrench, Plane, Train, Bus, Bike, Dumbbell, Book, Pill, Stethoscope, CreditCard, Smartphone, Laptop, Watch, Gift, Cake, Camera, Palette, Hammer, Scissors, Truck, Building, TreePine, Waves, Mountain, Sun, Moon, Star } from "lucide-react"
 import Link from "next/link"
 
 interface EditCategoryFormProps {
@@ -19,21 +21,22 @@ interface EditCategoryFormProps {
     description: string | null
     icon: string | null
     color: string | null
-    bookId: string
+    bookId: string | null
     book: {
       id: string
       name: string
-    }
+    } | null
   }
 }
 
 export default function EditCategoryForm({ category }: EditCategoryFormProps) {
   const router = useRouter()
   const [isLoading, setIsLoading] = useState(false)
+  const [isIconPickerOpen, setIsIconPickerOpen] = useState(false)
   const [formData, setFormData] = useState({
     name: category.name,
     description: category.description || "",
-    color: category.color || "",
+    icon: category.icon || "",
   })
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -54,7 +57,7 @@ export default function EditCategoryForm({ category }: EditCategoryFormProps) {
       const formDataObj = new FormData()
       formDataObj.append("name", formData.name)
       formDataObj.append("description", formData.description)
-      formDataObj.append("color", formData.color)
+      formDataObj.append("icon", formData.icon)
 
       const result = await updateCategory(category.id, formDataObj)
 
@@ -108,7 +111,7 @@ export default function EditCategoryForm({ category }: EditCategoryFormProps) {
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="p-3 bg-blue-50 rounded-lg">
               <p className="text-sm text-gray-700">
-                <span className="font-semibold">Book:</span> {category.book.name}
+                <span className="font-semibold">Book:</span> {category.book?.name || "Default"}
               </p>
             </div>
 
@@ -143,26 +146,113 @@ export default function EditCategoryForm({ category }: EditCategoryFormProps) {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="color" className="text-base font-semibold">
-                Color (Optional)
+              <Label htmlFor="icon" className="text-base font-semibold">
+                Icon (Optional)
               </Label>
               <div className="flex gap-3 items-center">
                 <Input
-                  id="color"
-                  type="color"
-                  value={formData.color || "#000000"}
-                  onChange={(e) => setFormData({ ...formData, color: e.target.value })}
-                  disabled={isLoading}
-                  className="w-20 h-10 p-1 cursor-pointer"
-                />
-                <Input
-                  placeholder="#FF5733 or rgb(255,87,51)"
-                  value={formData.color}
-                  onChange={(e) => setFormData({ ...formData, color: e.target.value })}
+                  id="icon"
+                  type="text"
+                  placeholder="e.g., Home, Car, Utensils"
+                  value={formData.icon}
+                  onChange={(e) => setFormData({ ...formData, icon: e.target.value })}
                   disabled={isLoading}
                   className="flex-1"
+                  maxLength={50}
                 />
+                <Dialog open={isIconPickerOpen} onOpenChange={setIsIconPickerOpen}>
+                  <DialogTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={isLoading}
+                      className="px-3"
+                    >
+                      Choose Icon
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-md">
+                    <DialogHeader>
+                      <DialogTitle>Choose an Icon</DialogTitle>
+                    </DialogHeader>
+                    <div className="grid grid-cols-8 gap-2 max-h-64 overflow-y-auto">
+                      {[
+                        { name: "Home", icon: Home },
+                        { name: "Car", icon: Car },
+                        { name: "Utensils", icon: Utensils },
+                        { name: "ShoppingBag", icon: ShoppingBag },
+                        { name: "Heart", icon: Heart },
+                        { name: "Briefcase", icon: Briefcase },
+                        { name: "GraduationCap", icon: GraduationCap },
+                        { name: "Gamepad2", icon: Gamepad2 },
+                        { name: "Film", icon: Film },
+                        { name: "Music", icon: Music },
+                        { name: "Coffee", icon: Coffee },
+                        { name: "Zap", icon: Zap },
+                        { name: "Wrench", icon: Wrench },
+                        { name: "Plane", icon: Plane },
+                        { name: "Train", icon: Train },
+                        { name: "Bus", icon: Bus },
+                        { name: "Bike", icon: Bike },
+                        { name: "Dumbbell", icon: Dumbbell },
+                        { name: "Book", icon: Book },
+                        { name: "Pill", icon: Pill },
+                        { name: "Stethoscope", icon: Stethoscope },
+                        { name: "CreditCard", icon: CreditCard },
+                        { name: "Smartphone", icon: Smartphone },
+                        { name: "Laptop", icon: Laptop },
+                        { name: "Watch", icon: Watch },
+                        { name: "Gift", icon: Gift },
+                        { name: "Cake", icon: Cake },
+                        { name: "Camera", icon: Camera },
+                        { name: "Palette", icon: Palette },
+                        { name: "Hammer", icon: Hammer },
+                        { name: "Scissors", icon: Scissors },
+                        { name: "Truck", icon: Truck },
+                        { name: "Building", icon: Building },
+                        { name: "TreePine", icon: TreePine },
+                        { name: "Waves", icon: Waves },
+                        { name: "Mountain", icon: Mountain },
+                        { name: "Sun", icon: Sun },
+                        { name: "Moon", icon: Moon },
+                        { name: "Star", icon: Star },
+                      ].map(({ name, icon: IconComponent }) => (
+                        <button
+                          key={name}
+                          type="button"
+                          onClick={() => {
+                            setFormData({ ...formData, icon: name })
+                            setIsIconPickerOpen(false)
+                          }}
+                          className="flex flex-col items-center gap-1 p-2 hover:bg-gray-100 rounded-md transition-colors"
+                          title={`Select ${name} icon`}
+                        >
+                          <IconComponent className="w-6 h-6" />
+                          <span className="text-xs text-gray-600 truncate max-w-full">{name}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex justify-end mt-4">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setIsIconPickerOpen(false)}
+                      >
+                        Close
+                      </Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+                {formData.icon && (
+                  <div className="p-2 bg-gray-100 rounded-md">
+                    <CategoryIcon iconName={formData.icon} />
+                  </div>
+                )}
               </div>
+              <p className="text-sm text-gray-500">
+                Add an icon to visually represent this category, or click &quot;Choose Icon&quot; to browse options
+              </p>
             </div>
 
             <div className="flex gap-3 pt-4 border-t border-gray-200">

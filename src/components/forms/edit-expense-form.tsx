@@ -25,11 +25,11 @@ interface EditExpenseFormProps {
     category: {
       id: string
       name: string
-      bookId: string
+      bookId: string | null
       book: {
         id: string
         name: string
-      }
+      } | null
     }
   }
 }
@@ -41,7 +41,7 @@ export default function EditExpenseForm({ expense }: EditExpenseFormProps) {
   const [categories, setCategories] = useState<any[]>([])
   const [formData, setFormData] = useState({
     amount: expense.amount.toString(),
-    date: expense.date.toISOString().split('T')[0],
+    date: expense.date.toISOString().slice(0, 16), // Include time up to minutes
     description: expense.description || "",
     paymentMethod: expense.paymentMethod || "",
     categoryId: expense.categoryId,
@@ -52,7 +52,7 @@ export default function EditExpenseForm({ expense }: EditExpenseFormProps) {
     try {
       const result = await getCategories()
       if (result.categories) {
-        const filteredCategories = result.categories.filter(
+        const filteredCategories = (result.categories as any[]).filter(
           cat => cat.bookId === expense.category.bookId
         )
         setCategories(filteredCategories)
@@ -178,7 +178,7 @@ export default function EditExpenseForm({ expense }: EditExpenseFormProps) {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="p-3 bg-blue-50 rounded-lg">
               <p className="text-sm text-gray-700">
-                <span className="font-semibold">Book:</span> {expense.category.book.name}
+                <span className="font-semibold">Book:</span> {expense.category.book?.name || "N/A"}
               </p>
             </div>
 
@@ -201,16 +201,16 @@ export default function EditExpenseForm({ expense }: EditExpenseFormProps) {
 
             <div className="space-y-2">
               <Label htmlFor="date" className="text-base font-semibold">
-                Date *
+                Date & Time *
               </Label>
               <Input
                 id="date"
-                type="date"
+                type="datetime-local"
                 value={formData.date}
                 onChange={(e) => setFormData({ ...formData, date: e.target.value })}
                 disabled={isLoading}
                 required
-                max={new Date().toISOString().split('T')[0]}
+                max={new Date().toISOString().slice(0, 16)}
               />
             </div>
 

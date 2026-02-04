@@ -8,9 +8,9 @@ import { z } from "zod"
 const categorySchema = z.object({
   name: z.string().min(1, "Category name is required").max(100),
   description: z.string().optional().default(""),
-  bookId: z.string().min(1, "Book is required"),
+  bookIds: z.array(z.string()).optional(),
   icon: z.string().optional().default(""),
-  color: z.string().optional().default(""),
+  isDefault: z.boolean().optional().default(false),
 })
 
 export async function createCategory(formData: FormData) {
@@ -19,18 +19,25 @@ export async function createCategory(formData: FormData) {
     return { error: "Unauthorized - Please log in first" }
   }
 
+  const bookIds = formData.getAll("bookIds") as string[]
+  
   const data = {
     name: formData.get("name"),
     description: formData.get("description") || "",
-    bookId: formData.get("bookId"),
+    bookIds: bookIds.length > 0 ? bookIds : undefined,
     icon: formData.get("icon") || "",
-    color: formData.get("color") || "",
+    isDefault: formData.get("isDefault") === "true",
   }
 
   const validatedFields = categorySchema.safeParse(data)
 
   if (!validatedFields.success) {
     return { error: "Invalid fields - " + validatedFields.error.issues.map(i => i.message).join(", ") }
+  }
+
+  // For default categories, bookId is not required
+  if (!validatedFields.data.isDefault && (!validatedFields.data.bookIds || validatedFields.data.bookIds.length === 0)) {
+    return { error: "At least one book is required for non-default categories" }
   }
 
   const prisma = getPrismaClient()
@@ -45,31 +52,58 @@ export async function createCategory(formData: FormData) {
       return { error: "User not found in database" }
     }
 
-    // Verify user owns the book
-    const book = await prisma.book.findUnique({
-      where: { id: validatedFields.data.bookId, userId: session.user.id },
-    })
+    // Verify user owns all the books (only for non-default categories)
+    if (!validatedFields.data.isDefault && validatedFields.data.bookIds) {
+      const books = await prisma.book.findMany({
+        where: {
+          id: { in: validatedFields.data.bookIds },
+          userId: session.user.id,
+          isArchived: false,
+        },
+      })
 
-    if (!book) {
-      return { error: "Book not found or access denied" }
+      if (books.length !== validatedFields.data.bookIds.length) {
+        return { error: "One or more books not found or access denied" }
+      }
     }
 
-    if (book.isArchived) {
-      return { error: "Cannot create categories for archived books" }
-    }
-
-    await prisma.category.create({
-      data: {
+    // Create categories for each selected book
+    if (validatedFields.data.bookIds && validatedFields.data.bookIds.length > 0) {
+      const categoryData = {
         name: validatedFields.data.name,
         description: validatedFields.data.description,
         icon: validatedFields.data.icon,
-        color: validatedFields.data.color,
-        bookId: validatedFields.data.bookId,
-      },
-    })
+        isDefault: validatedFields.data.isDefault,
+      }
+
+      // Create categories for each book
+      for (const bookId of validatedFields.data.bookIds) {
+        await prisma.category.create({
+          data: {
+            ...categoryData,
+            bookId: bookId,
+          },
+        })
+      }
+    } else {
+      // Create a default category (no book association)
+      await prisma.category.create({
+        data: {
+          name: validatedFields.data.name,
+          description: validatedFields.data.description,
+          icon: validatedFields.data.icon,
+          bookId: null,
+          isDefault: validatedFields.data.isDefault,
+        },
+      })
+    }
 
     revalidatePath("/categories")
-    revalidatePath(`/books/${validatedFields.data.bookId}`)
+    if (validatedFields.data.bookIds) {
+      validatedFields.data.bookIds.forEach(bookId => {
+        revalidatePath(`/books/${bookId}`)
+      })
+    }
     return { success: true }
   } catch (error) {
     console.error("Category creation error:", error)
@@ -97,18 +131,29 @@ export async function getCategories(bookId?: string) {
   try {
     const categories = await prisma.category.findMany({
       where: {
-        ...(bookId ? { bookId } : {}),
-        isDisabled: false,
-        book: {
-          userId: session.user.id,
-          isArchived: false,
-        },
+        OR: [
+          // Default categories (available to all users)
+          { isDefault: true, isDisabled: false },
+          // User's book-specific categories
+          {
+            isDefault: false,
+            isDisabled: false,
+            book: {
+              userId: session.user.id,
+              isArchived: false,
+              ...(bookId ? { id: bookId } : {}),
+            },
+          },
+        ],
       },
       include: {
         book: true,
         expenses: true,
       },
-      orderBy: { name: "asc" },
+      orderBy: [
+        { isDefault: "desc" }, // Show default categories first
+        { name: "asc" }
+      ],
     })
 
     return { categories }
@@ -148,7 +193,13 @@ export async function getCategoryById(id: string) {
       return { error: "Category not found" }
     }
 
-    if (category.book.userId !== session.user.id) {
+    // For default categories, book is null, so we can't check ownership
+    if (category.isDefault) {
+      return { error: "Cannot edit default categories" }
+    }
+
+    // For non-default categories, check book ownership
+    if (!category.book || category.book.userId !== session.user.id) {
       return { error: "Access denied" }
     }
 
@@ -185,7 +236,13 @@ export async function deleteCategory(id: string) {
     return { error: "Category not found" }
   }
 
-  if (category.book.userId !== session.user.id) {
+  // For default categories, book is null, so we can't check ownership
+  if (category.isDefault) {
+    return { error: "Cannot disable default categories" }
+  }
+
+  // For non-default categories, check book ownership
+  if (!category.book || category.book.userId !== session.user.id) {
     return { error: "Access denied" }
   }
 
@@ -220,13 +277,13 @@ export async function updateCategory(id: string, formData: FormData) {
   const data = {
     name: formData.get("name") as string || "",
     description: formData.get("description") as string || "",
-    color: formData.get("color") as string || "",
+    icon: formData.get("icon") as string || "",
   }
 
   const validatedFields = categorySchema.safeParse({
     ...data,
     bookId: "temp", // bookId not needed for update, but schema requires it
-    icon: "", // Not used in edit
+    isDefault: false, // Not used in edit
   })
 
   if (!validatedFields.success) {
@@ -255,7 +312,13 @@ export async function updateCategory(id: string, formData: FormData) {
       return { error: "Category not found" }
     }
 
-    if (existingCategory.book.userId !== session.user.id) {
+    // For default categories, book is null, so we can't check ownership
+    if (existingCategory.isDefault) {
+      return { error: "Cannot edit default categories" }
+    }
+
+    // For non-default categories, check book ownership
+    if (!existingCategory.book || existingCategory.book.userId !== session.user.id) {
       return { error: "Access denied" }
     }
 
@@ -272,7 +335,7 @@ export async function updateCategory(id: string, formData: FormData) {
       data: {
         name: data.name,
         description: data.description,
-        color: data.color,
+        icon: data.icon,
       },
     })
 
@@ -312,7 +375,13 @@ export async function disableCategory(id: string) {
     return { error: "Category not found" }
   }
 
-  if (category.book.userId !== session.user.id) {
+  // Cannot disable default categories
+  if (category.isDefault) {
+    return { error: "Cannot disable default categories" }
+  }
+
+  // For non-default categories, check book ownership
+  if (!category.book || category.book.userId !== session.user.id) {
     return { error: "Access denied" }
   }
 
@@ -361,7 +430,13 @@ export async function restoreCategory(id: string) {
     return { error: "Category not found" }
   }
 
-  if (category.book.userId !== session.user.id) {
+  // For default categories, book is null, so we can't check ownership
+  if (category.isDefault) {
+    return { error: "Cannot restore default categories" }
+  }
+
+  // For non-default categories, check book ownership
+  if (!category.book || category.book.userId !== session.user.id) {
     return { error: "Access denied" }
   }
 
@@ -410,7 +485,13 @@ export async function permanentDeleteCategory(id: string) {
     return { error: "Category not found" }
   }
 
-  if (category.book.userId !== session.user.id) {
+  // For default categories, book is null, so we can't check ownership
+  if (category.isDefault) {
+    return { error: "Cannot permanently delete default categories" }
+  }
+
+  // For non-default categories, check book ownership
+  if (!category.book || category.book.userId !== session.user.id) {
     return { error: "Access denied" }
   }
 
@@ -429,5 +510,79 @@ export async function permanentDeleteCategory(id: string) {
   } catch (error) {
     console.error("Category permanent delete error:", error)
     return { error: "Failed to permanently delete category" }
+  }
+}
+
+export async function addDefaultCategoryToBook(defaultCategoryId: string, bookId: string) {
+  const session = await getAuthSessionEdge()
+  if (!session?.user?.id) {
+    return { error: "Unauthorized - Please log in first" }
+  }
+
+  const prisma = getPrismaClient()
+
+  try {
+    // Verify user exists in database
+    const user = await prisma.user.findUnique({
+      where: { id: session.user.id },
+    })
+
+    if (!user) {
+      return { error: "User not found in database" }
+    }
+
+    // Verify the default category exists and is indeed default
+    const defaultCategory = await prisma.category.findUnique({
+      where: { id: defaultCategoryId, isDefault: true },
+    })
+
+    if (!defaultCategory) {
+      return { error: "Default category not found" }
+    }
+
+    // Verify user owns the book
+    const book = await prisma.book.findUnique({
+      where: { id: bookId, userId: session.user.id },
+    })
+
+    if (!book) {
+      return { error: "Book not found or access denied" }
+    }
+
+    if (book.isArchived) {
+      return { error: "Cannot add categories to archived books" }
+    }
+
+    // Check if user already has this category in the book
+    const existingCategory = await prisma.category.findFirst({
+      where: {
+        name: defaultCategory.name,
+        bookId: bookId,
+        isDefault: false,
+        isDisabled: false,
+      },
+    })
+
+    if (existingCategory) {
+      return { error: "This category already exists in the book" }
+    }
+
+    // Create a copy of the default category in the user's book
+    await prisma.category.create({
+      data: {
+        name: defaultCategory.name,
+        description: defaultCategory.description,
+        icon: defaultCategory.icon,
+        bookId: bookId,
+        isDefault: false,
+      },
+    })
+
+    revalidatePath("/categories")
+    revalidatePath(`/books/${bookId}`)
+    return { success: true }
+  } catch (error) {
+    console.error("Add default category error:", error)
+    return { error: "Failed to add default category to book" }
   }
 }

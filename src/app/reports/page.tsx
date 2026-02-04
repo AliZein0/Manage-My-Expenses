@@ -73,7 +73,7 @@ export default function ReportsPage() {
           variant: "destructive",
         })
       } else {
-        const filtered = result.categories?.filter(cat => cat.bookId === bookId) || []
+        const filtered = (result.categories as any[])?.filter(cat => cat.bookId === bookId) || []
         setBookCategories(filtered)
       }
     } finally {

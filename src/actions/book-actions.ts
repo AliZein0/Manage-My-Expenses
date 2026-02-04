@@ -45,11 +45,44 @@ export async function createBook(formData: FormData) {
       return { error: "User not found in database" }
     }
 
-    await prisma.book.create({
-      data: {
-        ...validatedFields.data,
-        userId: session.user.id,
-      },
+    // Get selected default categories
+    const selectedDefaultCategories = formData.getAll("defaultCategories") as string[]
+
+    // Create book and categories in a transaction
+    const result = await prisma.$transaction(async (tx) => {
+      // Create the book
+      const book = await tx.book.create({
+        data: {
+          ...validatedFields.data,
+          userId: session.user.id,
+        },
+      })
+
+      // If default categories were selected, add them to the book
+      if (selectedDefaultCategories.length > 0) {
+        // Get the default categories
+        const defaultCategories = await tx.category.findMany({
+          where: {
+            id: { in: selectedDefaultCategories },
+            isDefault: true,
+          },
+        })
+
+        // Create copies for this book
+        for (const defaultCategory of defaultCategories) {
+          await tx.category.create({
+            data: {
+              name: defaultCategory.name,
+              description: defaultCategory.description,
+              icon: defaultCategory.icon,
+              isDefault: false,
+              bookId: book.id,
+            },
+          })
+        }
+      }
+
+      return book
     })
 
     revalidatePath("/books")

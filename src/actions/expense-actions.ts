@@ -48,7 +48,16 @@ export async function createExpense(formData: FormData) {
     include: { book: true },
   })
 
-  if (!category || category.book.userId !== session.user.id) {
+  if (!category) {
+    return { error: "Category not found" }
+  }
+
+  // Default categories don't have books, so they can't be used for expenses
+  if (!category.book) {
+    return { error: "Invalid category selected" }
+  }
+
+  if (category.book.userId !== session.user.id) {
     return { error: "Category not found or access denied" }
   }
 
@@ -170,6 +179,11 @@ export async function deleteExpense(id: string) {
     return { error: "Expense not found" }
   }
 
+  // Check if category has a book (should always be true for user expenses)
+  if (!expense.category.book) {
+    return { error: "Invalid expense - category has no associated book" }
+  }
+
   if (expense.category.book.userId !== session.user.id) {
     return { error: "Access denied" }
   }
@@ -210,7 +224,7 @@ export async function getExpenseById(id: string) {
       },
     })
 
-    if (!expense || expense.category.book.userId !== session.user.id) {
+    if (!expense || !expense.category.book || expense.category.book.userId !== session.user.id) {
       return { error: "Expense not found" }
     }
 
@@ -257,6 +271,11 @@ export async function updateExpense(id: string, formData: FormData) {
     return { error: "Expense not found" }
   }
 
+  // Check if category has a book (should always be true for user expenses)
+  if (!existingExpense.category.book) {
+    return { error: "Invalid expense - category has no associated book" }
+  }
+
   if (existingExpense.category.book.userId !== session.user.id) {
     return { error: "Access denied" }
   }
@@ -288,7 +307,7 @@ export async function updateExpense(id: string, formData: FormData) {
       include: { book: true },
     })
 
-    if (!newCategory || newCategory.book.userId !== session.user.id) {
+    if (!newCategory || !newCategory.book || newCategory.book.userId !== session.user.id) {
       return { error: "Category not found or access denied" }
     }
 
@@ -369,6 +388,11 @@ export async function disableExpense(id: string) {
     return { error: "Expense not found" }
   }
 
+  // Check if category has a book (should always be true for user expenses)
+  if (!expense.category.book) {
+    return { error: "Invalid expense - category has no associated book" }
+  }
+
   if (expense.category.book.userId !== session.user.id) {
     return { error: "Access denied" }
   }
@@ -424,6 +448,11 @@ export async function restoreExpense(id: string) {
     return { error: "Expense not found" }
   }
 
+  // Check if category has a book (should always be true for user expenses)
+  if (!expense.category.book) {
+    return { error: "Invalid expense - category has no associated book" }
+  }
+
   if (expense.category.book.userId !== session.user.id) {
     return { error: "Access denied" }
   }
@@ -477,6 +506,11 @@ export async function permanentDeleteExpense(id: string) {
 
   if (!expense) {
     return { error: "Expense not found" }
+  }
+
+  // Check if category has a book (should always be true for user expenses)
+  if (!expense.category.book) {
+    return { error: "Invalid expense - category has no associated book" }
   }
 
   if (expense.category.book.userId !== session.user.id) {

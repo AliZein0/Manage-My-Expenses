@@ -8,6 +8,7 @@ import Link from "next/link"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import { AppLayout } from "@/components/layout/app-layout"
 import { Badge } from "@/components/ui/badge"
+import { CategoryIcon } from "@/components/ui/category-icon"
 import { Eye, EyeOff } from "lucide-react"
 import { getPrismaClient } from "@/lib/prisma"
 
@@ -55,8 +56,8 @@ export default async function ExpensesPage({ searchParams }: ExpensesPageProps) 
     )
   }
 
-  let expenses = expensesResult.expenses || []
-  let categories = categoriesResult.categories || []
+  let expenses = expensesResult.expenses as any[] || []
+  let categories = categoriesResult.categories as any[] || []
 
   // Filter by bookId if provided
   if (bookId) {
@@ -166,15 +167,7 @@ export default async function ExpensesPage({ searchParams }: ExpensesPageProps) 
                       <td className="p-3 text-gray-700">{formatDate(expense.date)}</td>
                       <td className="p-3">
                         <span className="inline-flex items-center gap-2">
-                          {expense.category.color && (
-                            <div 
-                              className="w-3 h-3 rounded-full shadow-sm" 
-                              style={{ backgroundColor: expense.category.color }}
-                            />
-                          )}
-                          {expense.category.icon && (
-                            <span>{expense.category.icon}</span>
-                          )}
+                          <CategoryIcon iconName={expense.category.icon} className="w-4 h-4 text-gray-600" />
                           <span className="font-medium text-gray-900">{expense.category.name}</span>
                         </span>
                       </td>
@@ -188,9 +181,9 @@ export default async function ExpensesPage({ searchParams }: ExpensesPageProps) 
                           </div>
                         )}
                       </td>
-                      <td className="p-3 text-gray-600">{expense.category.book.name}</td>
+                      <td className="p-3 text-gray-600">{expense.category.book?.name || "N/A"}</td>
                       <td className="p-3 text-right font-bold text-purple-600 text-lg">
-                        {formatCurrency(expense.amount, expense.category.book.currency)}
+                        {formatCurrency(expense.amount, expense.category.book?.currency || "USD")}
                       </td>
                       <td className="p-3 text-right">
                         <div className="flex gap-1 justify-end">
@@ -240,15 +233,7 @@ export default async function ExpensesPage({ searchParams }: ExpensesPageProps) 
                       <td className="p-3 text-gray-500 line-through">{formatDate(expense.date)}</td>
                       <td className="p-3">
                         <span className="inline-flex items-center gap-2 text-gray-500 line-through">
-                          {expense.category.color && (
-                            <div 
-                              className="w-3 h-3 rounded-full" 
-                              style={{ backgroundColor: expense.category.color }}
-                            />
-                          )}
-                          {expense.category.icon && (
-                            <span>{expense.category.icon}</span>
-                          )}
+                          <CategoryIcon iconName={expense.category.icon} className="w-4 h-4 text-gray-400" />
                           <span className="font-medium">{expense.category.name}</span>
                         </span>
                       </td>

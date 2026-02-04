@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import Link from "next/link"
 import { Badge } from "@/components/ui/badge"
 import { AppLayout } from "@/components/layout/app-layout"
+import { CategoryIcon } from "@/components/ui/category-icon"
 import { Eye, EyeOff } from "lucide-react"
 
 interface CategoriesPageProps {
@@ -46,10 +47,13 @@ export default async function CategoriesPage({ searchParams }: CategoriesPagePro
     )
   }
 
-  // Filter categories by bookId if provided
-  let categories = result.categories || []
+  const allCategories = result.categories as any[] || []
+  const defaultCategories = allCategories.filter(cat => cat.isDefault)
+  let userCategories = allCategories.filter(cat => !cat.isDefault)
+
+  // Filter user categories by bookId if provided
   if (bookId) {
-    categories = categories.filter(cat => cat.bookId === bookId)
+    userCategories = userCategories.filter(cat => cat.bookId === bookId)
   }
 
   // Get disabled categories if requested
@@ -58,13 +62,14 @@ export default async function CategoriesPage({ searchParams }: CategoriesPagePro
     const prisma = (await import("@/lib/prisma")).getPrismaClient()
     disabledCategories = await prisma.category.findMany({
       where: {
+        isDefault: false, // Only show disabled user categories
         ...(bookId ? { bookId } : {}),
         isDisabled: true,
         book: {
           userId: session.user.id,
           isArchived: false,
         },
-      },
+      } as any,
       include: {
         book: true,
         expenses: true,
@@ -112,19 +117,87 @@ export default async function CategoriesPage({ searchParams }: CategoriesPagePro
           </div>
         </div>
 
+        {/* Default Categories */}
+        {defaultCategories.length > 0 && (
+          <div className="space-y-4">
+            <h2 className="text-xl font-semibold text-blue-800 bg-blue-50 p-3 rounded-lg border border-blue-200">Default Categories</h2>
+            <div className="border rounded-lg overflow-hidden shadow-sm bg-white">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b-2 border-blue-200 bg-blue-50">
+                    <th className="text-left p-3 font-semibold text-blue-900">Icon</th>
+                    <th className="text-left p-3 font-semibold text-blue-900">Name</th>
+                    <th className="text-left p-3 font-semibold text-blue-900">Description</th>
+                    <th className="text-center p-3 font-semibold text-blue-900">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {defaultCategories.map((category, index) => (
+                    <tr
+                      key={category.id}
+                      className={`border-b hover:bg-blue-50/50 transition-colors ${index % 2 === 0 ? 'bg-white' : 'bg-blue-50/20'}`}
+                    >
+                      <td className="p-3">
+                        {category.icon && (
+                          <CategoryIcon iconName={category.icon} />
+                        )}
+                      </td>
+                      <td className="p-3 font-medium text-gray-900">{category.name}</td>
+                      <td className="p-3 text-gray-600">
+                        {category.description || <span className="text-gray-400 italic">No description</span>}
+                      </td>
+                      <td className="p-3 text-center">
+                        <div className="flex gap-1 justify-center">
+                          {bookId ? (
+                            <form action={async (formData: FormData) => {
+                              "use server"
+                              const categoryId = formData.get("categoryId") as string
+                              const bookIdValue = formData.get("bookId") as string
+                              const { addDefaultCategoryToBook } = await import("@/actions/category-actions")
+                              await addDefaultCategoryToBook(categoryId, bookIdValue)
+                              // Revalidate the page
+                              const { revalidatePath } = await import("next/cache")
+                              revalidatePath("/categories")
+                            }}>
+                              <input type="hidden" name="categoryId" value={category.id} />
+                              <input type="hidden" name="bookId" value={bookId} />
+                              <Button
+                                type="submit"
+                                variant="outline"
+                                size="sm"
+                                className="hover:bg-green-100"
+                              >
+                                Add to Book
+                              </Button>
+                            </form>
+                          ) : (
+                            <span className="text-gray-400 text-sm">Select a book to add</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         {/* Active Categories */}
-        {categories.length === 0 ? (
+        {userCategories.length === 0 ? (
           <div className="border-2 border-dashed border-green-300 rounded-lg p-12 text-center bg-green-50">
             <p className="text-green-800 text-lg font-medium">No active categories yet. Create your first category to get started!</p>
           </div>
         ) : (
           <div className="space-y-4">
-            <h2 className="text-xl font-semibold text-green-800 bg-green-50 p-3 rounded-lg border border-green-200">Active Categories</h2>
+            <h2 className="text-xl font-semibold text-green-800 bg-green-50 p-3 rounded-lg border border-green-200">
+              {book ? `Book Categories - ${book.name}` : "Your Categories"}
+            </h2>
             <div className="border rounded-lg overflow-hidden shadow-sm bg-white">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b-2 border-green-200 bg-green-50">
-                    <th className="text-left p-3 font-semibold text-green-900">Color</th>
+                    <th className="text-left p-3 font-semibold text-green-900">Icon</th>
                     <th className="text-left p-3 font-semibold text-green-900">Name</th>
                     <th className="text-left p-3 font-semibold text-green-900">Description</th>
                     {!bookId && <th className="text-left p-3 font-semibold text-green-900">Book</th>}
@@ -133,25 +206,22 @@ export default async function CategoriesPage({ searchParams }: CategoriesPagePro
                   </tr>
                 </thead>
                 <tbody>
-                  {categories.map((category, index) => (
+                  {userCategories.map((category, index) => (
                     <tr 
                       key={category.id} 
                       className={`border-b hover:bg-green-50/50 transition-colors ${index % 2 === 0 ? 'bg-white' : 'bg-green-50/20'}`}
                     >
                       <td className="p-3">
-                        {category.color && (
-                          <div 
-                            className="w-6 h-6 rounded-full shadow-sm" 
-                            style={{ backgroundColor: category.color }}
-                          />
+                        {category.icon && (
+                          <CategoryIcon iconName={category.icon} />
                         )}
                       </td>
                       <td className="p-3 font-medium text-gray-900">{category.name}</td>
                       <td className="p-3 text-gray-600">
                         {category.description || <span className="text-gray-400 italic">No description</span>}
                       </td>
-                      {!bookId && (
-                        <td className="p-3 text-gray-600">{category.book.name}</td>
+                      {!bookId && !category.isDefault && (
+                        <td className="p-3 text-gray-600">{category.book?.name || "Default"}</td>
                       )}
                       <td className="p-3 text-center">
                         <span className="inline-flex items-center justify-center px-2 py-1 bg-blue-100 text-blue-800 border border-blue-200 rounded-full text-xs font-semibold">
@@ -163,17 +233,21 @@ export default async function CategoriesPage({ searchParams }: CategoriesPagePro
                           <Button variant="outline" size="sm" asChild className="hover:bg-blue-100">
                             <Link href={`/expenses?categoryId=${category.id}`}>View</Link>
                           </Button>
-                          <Button variant="outline" size="sm" asChild className="hover:bg-yellow-100">
-                            <Link href={`/categories/edit/${category.id}`}>Edit</Link>
-                          </Button>
-                          <Button 
-                            variant="destructive" 
-                            size="sm" 
-                            asChild
-                            className="hover:bg-red-100"
-                          >
-                            <Link href={`/categories/delete/${category.id}`}>Disable</Link>
-                          </Button>
+                          {!category.isDefault && (
+                            <>
+                              <Button variant="outline" size="sm" asChild className="hover:bg-yellow-100">
+                                <Link href={`/categories/edit/${category.id}`}>Edit</Link>
+                              </Button>
+                              <Button 
+                                variant="destructive" 
+                                size="sm" 
+                                asChild
+                                className="hover:bg-red-100"
+                              >
+                                <Link href={`/categories/delete/${category.id}`}>Disable</Link>
+                              </Button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -192,7 +266,7 @@ export default async function CategoriesPage({ searchParams }: CategoriesPagePro
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b-2 border-gray-300 bg-gray-200">
-                    <th className="text-left p-3 font-semibold text-gray-700">Color</th>
+                    <th className="text-left p-3 font-semibold text-gray-700">Icon</th>
                     <th className="text-left p-3 font-semibold text-gray-700">Name</th>
                     <th className="text-left p-3 font-semibold text-gray-700">Description</th>
                     {!bookId && <th className="text-left p-3 font-semibold text-gray-700">Book</th>}
@@ -207,11 +281,8 @@ export default async function CategoriesPage({ searchParams }: CategoriesPagePro
                       className={`border-b opacity-75 ${index % 2 === 0 ? 'bg-gray-50' : 'bg-gray-100/50'}`}
                     >
                       <td className="p-3">
-                        {category.color && (
-                          <div 
-                            className="w-6 h-6 rounded-full" 
-                            style={{ backgroundColor: category.color }}
-                          />
+                        {category.icon && (
+                          <CategoryIcon iconName={category.icon} className="w-5 h-5 line-through" />
                         )}
                       </td>
                       <td className="p-3 font-medium text-gray-700 line-through">{category.name}</td>

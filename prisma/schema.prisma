@@ -56,11 +56,12 @@ model Category {
   icon        String?
   color       String?
   isDisabled  Boolean   @default(false)
+  isDefault   Boolean   @default(false)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  bookId      String
-  book        Book      @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  bookId      String?
+  book        Book?     @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
   expenses    Expense[]
 

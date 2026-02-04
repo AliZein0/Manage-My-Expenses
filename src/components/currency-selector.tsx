@@ -59,7 +59,7 @@ export function CurrencySelector({ value, onChange, disabled }: CurrencySelector
       <SelectTrigger>
         <SelectValue placeholder="Select currency" />
       </SelectTrigger>
-      <SelectContent>
+      <SelectContent className="max-h-60 overflow-y-auto">
         {COMMON_CURRENCIES.map((currency) => (
           <SelectItem key={currency.code} value={currency.code}>
             {currency.code} - {currency.name}

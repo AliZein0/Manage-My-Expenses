@@ -7,7 +7,7 @@ import Link from "next/link"
 import { Badge } from "@/components/ui/badge"
 import { AppLayout } from "@/components/layout/app-layout"
 import { CategoryIcon } from "@/components/ui/category-icon"
-import { Eye, EyeOff } from "lucide-react"
+import { Eye, EyeOff, Check } from "lucide-react"
 
 interface CategoriesPageProps {
   searchParams: {
@@ -54,6 +54,20 @@ export default async function CategoriesPage({ searchParams }: CategoriesPagePro
   // Filter user categories by bookId if provided
   if (bookId) {
     userCategories = userCategories.filter(cat => cat.bookId === bookId)
+  }
+
+  // Check which default categories are already added to this book
+  const alreadyAddedDefaultCategories = new Set()
+  if (bookId) {
+    userCategories.forEach(cat => {
+      // Find matching default category by name (case insensitive)
+      const matchingDefault = defaultCategories.find(defaultCat => 
+        defaultCat.name.toLowerCase() === cat.name.toLowerCase()
+      )
+      if (matchingDefault) {
+        alreadyAddedDefaultCategories.add(matchingDefault.id)
+      }
+    })
   }
 
   // Get disabled categories if requested
@@ -132,51 +146,71 @@ export default async function CategoriesPage({ searchParams }: CategoriesPagePro
                   </tr>
                 </thead>
                 <tbody>
-                  {defaultCategories.map((category, index) => (
-                    <tr
-                      key={category.id}
-                      className={`border-b hover:bg-blue-50/50 transition-colors ${index % 2 === 0 ? 'bg-white' : 'bg-blue-50/20'}`}
-                    >
-                      <td className="p-3">
-                        {category.icon && (
-                          <CategoryIcon iconName={category.icon} />
-                        )}
-                      </td>
-                      <td className="p-3 font-medium text-gray-900">{category.name}</td>
-                      <td className="p-3 text-gray-600">
-                        {category.description || <span className="text-gray-400 italic">No description</span>}
-                      </td>
-                      <td className="p-3 text-center">
-                        <div className="flex gap-1 justify-center">
-                          {bookId ? (
-                            <form action={async (formData: FormData) => {
-                              "use server"
-                              const categoryId = formData.get("categoryId") as string
-                              const bookIdValue = formData.get("bookId") as string
-                              const { addDefaultCategoryToBook } = await import("@/actions/category-actions")
-                              await addDefaultCategoryToBook(categoryId, bookIdValue)
-                              // Revalidate the page
-                              const { revalidatePath } = await import("next/cache")
-                              revalidatePath("/categories")
-                            }}>
-                              <input type="hidden" name="categoryId" value={category.id} />
-                              <input type="hidden" name="bookId" value={bookId} />
-                              <Button
-                                type="submit"
-                                variant="outline"
-                                size="sm"
-                                className="hover:bg-green-100"
-                              >
-                                Add to Book
-                              </Button>
-                            </form>
-                          ) : (
-                            <span className="text-gray-400 text-sm">Select a book to add</span>
+                  {defaultCategories.map((category, index) => {
+                    const isAlreadyAdded = alreadyAddedDefaultCategories.has(category.id)
+                    
+                    return (
+                      <tr
+                        key={category.id}
+                        className={`border-b hover:bg-blue-50/50 transition-colors ${
+                          isAlreadyAdded 
+                            ? 'bg-green-50 border-green-200' 
+                            : index % 2 === 0 ? 'bg-white' : 'bg-blue-50/20'
+                        }`}
+                      >
+                        <td className="p-3">
+                          {category.icon && (
+                            <CategoryIcon iconName={category.icon} />
                           )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td className="p-3 font-medium text-gray-900">
+                          {category.name}
+                          {isAlreadyAdded && (
+                            <span className="ml-2 text-green-600 text-sm font-normal">(Added)</span>
+                          )}
+                        </td>
+                        <td className="p-3 text-gray-600">
+                          {category.description || <span className="text-gray-400 italic">No description</span>}
+                        </td>
+                        <td className="p-3 text-center">
+                          <div className="flex gap-1 justify-center">
+                            {bookId ? (
+                              isAlreadyAdded ? (
+                                <span className="text-green-600 text-sm font-medium flex items-center">
+                                  <Check className="w-4 h-4 mr-1" />
+                                  Already Added
+                                </span>
+                              ) : (
+                                <form action={async (formData: FormData) => {
+                                  "use server"
+                                  const categoryId = formData.get("categoryId") as string
+                                  const bookIdValue = formData.get("bookId") as string
+                                  const { addDefaultCategoryToBook } = await import("@/actions/category-actions")
+                                  await addDefaultCategoryToBook(categoryId, bookIdValue)
+                                  // Revalidate the page
+                                  const { revalidatePath } = await import("next/cache")
+                                  revalidatePath("/categories")
+                                }}>
+                                  <input type="hidden" name="categoryId" value={category.id} />
+                                  <input type="hidden" name="bookId" value={bookId} />
+                                  <Button
+                                    type="submit"
+                                    variant="outline"
+                                    size="sm"
+                                    className="hover:bg-green-100"
+                                  >
+                                    Add to Book
+                                  </Button>
+                                </form>
+                              )
+                            ) : (
+                              <span className="text-gray-400 text-sm">Select a book to add</span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

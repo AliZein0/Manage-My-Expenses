@@ -74,7 +74,7 @@ model Expense {
   amount       Float
   date         DateTime
   description  String?
-  paymentMethod String?
+  paymentMethod String  @default("Cash")
   isDisabled   Boolean  @default(false)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt

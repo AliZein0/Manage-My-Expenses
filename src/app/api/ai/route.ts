@@ -13,7 +13,8 @@ const OPENROUTER_TEMPERATURE = parseFloat(process.env.OPENROUTER_TEMPERATURE || 
 const OPENROUTER_MAX_TOKENS = parseInt(process.env.OPENROUTER_MAX_TOKENS || '1000', 10)
 const APP_URL = process.env.APP_URL || process.env.NEXTAUTH_URL || 'https://localhost:3000'
 const APP_NAME = process.env.APP_NAME || 'Manage My Expenses'
-const ENABLE_AI_SQL_EXECUTION = (process.env.ENABLE_AI_SQL_EXECUTION || 'true').toLowerCase() === 'true' 
+const ENABLE_AI_SQL_EXECUTION = (process.env.ENABLE_AI_SQL_EXECUTION || 'true').toLowerCase() === 'true'
+const ENABLE_STREAMING = (process.env.ENABLE_AI_STREAMING || 'true').toLowerCase() === 'true' 
 
 // Model configuration with fallbacks - now loaded from env with safe defaults
 const MODEL_CONFIG = {
@@ -22,7 +23,7 @@ const MODEL_CONFIG = {
 } 
 
 // Helper function to call OpenRouter API with fallback support
-async function callOpenRouterAPI(messages: any[], model: string = MODEL_CONFIG.primary) {
+async function callOpenRouterAPI(messages: any[], model: string = MODEL_CONFIG.primary, stream: boolean = false) {
   try {
     const apiResponse = await fetch(`${OPENROUTER_API_URL}/chat/completions`, {
       method: 'POST',
@@ -37,6 +38,7 @@ async function callOpenRouterAPI(messages: any[], model: string = MODEL_CONFIG.p
         messages: messages,
         temperature: OPENROUTER_TEMPERATURE,
         max_tokens: OPENROUTER_MAX_TOKENS,
+        stream: stream,
       }),
     })
 
@@ -536,6 +538,31 @@ async function executeDirectSQLWithValidation(query: string) {
         if (!uuidPattern.test(bookId)) {
           throw new Error(`Invalid bookId: "${bookId}". Book ID must be a valid UUID, not a book name.`);
         }
+
+        // Check if the book actually exists in the database and user owns it
+        // We need to get the session to check ownership
+        let session = null;
+        try {
+          session = await getServerSession(authOptions);
+        } catch (error) {
+          throw new Error('Unable to verify user session');
+        }
+        
+        if (!session?.user?.id) {
+          throw new Error('User not authenticated');
+        }
+        
+        const bookExists = await prisma.book.findUnique({
+          where: { 
+            id: bookId,
+            userId: session.user.id,
+            isArchived: false
+          }
+        });
+        
+        if (!bookExists) {
+          throw new Error(`Book with ID "${bookId}" does not exist or you don't have access to it. Please check that the book exists and you own it before adding categories to it.`);
+        }
       }
       
       // Extract the category name from the INSERT query
@@ -820,11 +847,15 @@ async function executeUpdateSQLWithValidation(query: string, userId: string) {
     }
     
     // Check for AND without WHERE
-    const upperQuery = trimmedQuery.toUpperCase();
+    const upperQuery = trimmedQuery.toUpperCase().replace(/\s+/g, ' ');
     const andIndex = upperQuery.indexOf(' AND ');
     const whereIndex = upperQuery.indexOf(' WHERE ');
     
-    if (andIndex !== -1 && (whereIndex === -1 || andIndex < whereIndex)) {
+    if (andIndex !== -1 && whereIndex === -1) {
+      throw new Error('Query contains AND keyword but no WHERE clause');
+    }
+    
+    if (andIndex !== -1 && andIndex < whereIndex) {
       throw new Error('Query contains AND keyword before WHERE clause');
     }
 
@@ -984,27 +1015,113 @@ function addUserFilterToUpdateQuery(query: string, userId: string): string {
   
   if (lowerQuery.includes('expenses')) {
     // For expenses, add user filtering by joining through categories and books
-    // Extract the SET clause to preserve the original updates
+    console.log('addUserFilterToUpdateQuery: Processing expenses query:', trimmedQuery);
+    
+    // Check if query already has JOINs with categories and books and userId filter
+    const hasJoinWithCategories = /join\s+categories\s+c\s+on/i.test(lowerQuery);
+    const hasJoinWithBooks = /join\s+books\s+b\s+on/i.test(lowerQuery);
+    const hasUserIdFilter = /b\.userid\s*=\s*'[^']+'/i.test(lowerQuery);
+    
+    if (hasJoinWithCategories && hasJoinWithBooks && hasUserIdFilter) {
+      console.log('addUserFilterToUpdateQuery: Query already has JOINs and userId filter, returning as-is');
+      return trimmedQuery;
+    }
+    
+    // Check if userId is already present but we need to add JOINs
+    if (hasUserIdFilter && (!hasJoinWithCategories || !hasJoinWithBooks)) {
+      console.log('addUserFilterToUpdateQuery: Query has userId but missing JOINs, needs reconstruction');
+      const setMatch = trimmedQuery.match(/set\s+(.+?)\s+where/i);
+      if (setMatch) {
+        let setClause = setMatch[1];
+        
+        // Ensure SET clause has proper table prefixes for expenses
+        if (!setClause.includes('e.')) {
+          // Add 'e.' prefix to fields that don't have it
+          setClause = setClause.replace(/\b(isDisabled|updatedAt|amount|date|description|paymentMethod)\b/g, (match) => 'e.' + match);
+        }
+        
+        const whereMatch = trimmedQuery.match(/where\s+(.+)$/i);
+        const whereClause = whereMatch ? whereMatch[1] : '1=1';
+        
+        return `UPDATE expenses e 
+               JOIN categories c ON e.categoryId = c.id 
+               JOIN books b ON c.bookId = b.id 
+               SET ${setClause} 
+               WHERE ${whereClause}`;
+      }
+    }
+    
+    // Query needs JOINs and userId filter
     const setMatch = trimmedQuery.match(/set\s+(.+?)\s+where/i);
+    console.log('addUserFilterToUpdateQuery: SET match:', setMatch);
     if (setMatch) {
-      const setClause = setMatch[1];
-      // Extract WHERE clause
+      let setClause = setMatch[1];
+      
+      // Ensure SET clause has proper table prefixes for expenses
+      if (!setClause.includes('e.')) {
+        // Add 'e.' prefix to fields that don't have it
+        setClause = setClause.replace(/\b(isDisabled|updatedAt|amount|date|description|paymentMethod)\b/g, (match) => 'e.' + match);
+      }
+      
       const whereMatch = trimmedQuery.match(/where\s+(.+)$/i);
       const whereClause = whereMatch ? whereMatch[1] : '1=1';
+      console.log('addUserFilterToUpdateQuery: WHERE clause extracted:', whereClause);
       
-      return `UPDATE expenses e 
+      const result = `UPDATE expenses e 
              JOIN categories c ON e.categoryId = c.id 
              JOIN books b ON c.bookId = b.id 
              SET ${setClause} 
              WHERE ${whereClause} AND b.userId = '${userId}'`;
+      return result;
     }
   } else if (lowerQuery.includes('categories')) {
     // For categories, add user filtering by joining with books
     console.log('addUserFilterToUpdateQuery: Processing categories query:', trimmedQuery);
+    
+    // Check if query already has JOIN with books and userId filter
+    const hasJoinWithBooks = /join\s+books\s+b\s+on/i.test(lowerQuery);
+    const hasUserIdFilter = /b\.userid\s*=\s*'[^']+'/i.test(lowerQuery);
+    
+    if (hasJoinWithBooks && hasUserIdFilter) {
+      console.log('addUserFilterToUpdateQuery: Query already has JOIN and userId filter, returning as-is');
+      return trimmedQuery;
+    }
+    
+    // Check if userId is already present but we need to add JOIN
+    if (hasUserIdFilter && !hasJoinWithBooks) {
+      console.log('addUserFilterToUpdateQuery: Query has userId but missing JOIN, needs reconstruction');
+      const setMatch = trimmedQuery.match(/set\s+(.+?)\s+where/i);
+      if (setMatch) {
+        let setClause = setMatch[1];
+        
+        // Ensure SET clause has proper table prefixes for categories
+        if (!setClause.includes('c.')) {
+          // Add 'c.' prefix to fields that don't have it
+          setClause = setClause.replace(/\b(isDisabled|updatedAt|name|description|icon|color|isDefault)\b/g, (match) => 'c.' + match);
+        }
+        
+        const whereMatch = trimmedQuery.match(/where\s+(.+)$/i);
+        const whereClause = whereMatch ? whereMatch[1] : '1=1';
+        
+        return `UPDATE categories c 
+               JOIN books b ON c.bookId = b.id 
+               SET ${setClause} 
+               WHERE ${whereClause}`;
+      }
+    }
+    
+    // Query needs both JOIN and userId filter
     const setMatch = trimmedQuery.match(/set\s+(.+?)\s+where/i);
     console.log('addUserFilterToUpdateQuery: SET match:', setMatch);
     if (setMatch) {
-      const setClause = setMatch[1];
+      let setClause = setMatch[1];
+      
+      // Ensure SET clause has proper table prefixes for categories
+      if (!setClause.includes('c.')) {
+        // Add 'c.' prefix to fields that don't have it
+        setClause = setClause.replace(/\b(isDisabled|updatedAt|name|description|icon|color|isDefault)\b/g, (match) => 'c.' + match);
+      }
+      
       const whereMatch = trimmedQuery.match(/where\s+(.+)$/i);
       const whereClause = whereMatch ? whereMatch[1] : '1=1';
       console.log('addUserFilterToUpdateQuery: WHERE clause extracted:', whereClause);
@@ -1013,7 +1130,6 @@ function addUserFilterToUpdateQuery(query: string, userId: string): string {
              JOIN books b ON c.bookId = b.id 
              SET ${setClause} 
              WHERE ${whereClause} AND b.userId = '${userId}'`;
-      console.log('addUserFilterToUpdateQuery: Final query:', result);
       return result;
     }
   } else if (lowerQuery.includes('books')) {
@@ -1190,7 +1306,20 @@ function addCategoriesJoins(originalQuery: string, userId: string): string {
 
 export async function POST(request: Request) {
   
+    // Initialize timing metrics
+    const timingMetrics = {
+      startTime: Date.now(),
+      sessionRetrieval: 0,
+      ragContext: 0,
+      userContextBuilding: 0,
+      aiApiCall: 0,
+      sqlExtraction: 0,
+      sqlExecution: 0,
+      totalTime: 0
+    };
+  
     // Get user session
+    const sessionStart = Date.now();
     let session = null
     try {
       session = await getServerSession(authOptions)
@@ -1198,6 +1327,8 @@ export async function POST(request: Request) {
       // User isn't logged in
       session = null
     }
+    timingMetrics.sessionRetrieval = Date.now() - sessionStart;
+    console.log(`⏱️ Session retrieval took: ${timingMetrics.sessionRetrieval}ms`);
     
     const { message, conversationHistory } = await request.json()
     
@@ -1227,7 +1358,10 @@ export async function POST(request: Request) {
       messages.push({ role: 'user', content: message })
       
       // Call OpenRouter API for basic AI response
+      const aiApiStart = Date.now();
       const completion = await callOpenRouterAPI(messages)
+      timingMetrics.aiApiCall = Date.now() - aiApiStart;
+      console.log(`⏱️ AI API call took: ${timingMetrics.aiApiCall}ms`);
 
       let aiResponse = completion.choices[0]?.message?.content || 'I apologize, but I could not generate a response.'
       
@@ -1242,12 +1376,21 @@ export async function POST(request: Request) {
         aiResponse = aiResponse.replace(systemResponsePattern, '').trim();
       }
       
+      // Calculate total time for non-authenticated flow
+      timingMetrics.totalTime = Date.now() - timingMetrics.startTime;
+      console.log(`⏱️ Total processing time (non-auth): ${timingMetrics.totalTime}ms`);
+      
       return NextResponse.json({
         response: aiResponse,
         model: MODEL_CONFIG.primary,
         usage: completion.usage,
         requiresAuth: true,
-        message: 'Please log in to access personalized features like RAG context, record creation, and database queries.'
+        message: 'Please log in to access personalized features like RAG context, record creation, and database queries.',
+        timingMetrics: {
+          sessionRetrieval: timingMetrics.sessionRetrieval,
+          aiApiCall: timingMetrics.aiApiCall,
+          totalTime: timingMetrics.totalTime
+        }
       })
     }
 
@@ -1257,7 +1400,9 @@ export async function POST(request: Request) {
     
     if (session?.user?.id) {
       console.log('AI SQL Flow: User authenticated, processing message:', message);
+      
       // Get user's current data for context
+      const userContextStart = Date.now();
       let userContext = '';
       let userBooks: any[] = [];
       let archivedBooks: any[] = [];
@@ -1301,27 +1446,75 @@ export async function POST(request: Request) {
             });
             console.log('AI SQL Flow: User context built with', categories.length, 'categories');
           }
+
+          // Also fetch disabled categories for restoration context
+          const disabledCategories = await prisma.category.findMany({
+            where: { bookId: { in: bookIds }, isDisabled: true }
+          });
+          
+          if (disabledCategories.length > 0) {
+            userContext += `\nDISABLED CATEGORIES (available for restoration):\n`;
+            disabledCategories.forEach(cat => {
+              userContext += `- Category Name: ${cat.name}, Category ID: ${cat.id}, Book ID: ${cat.bookId}\n`;
+            });
+            console.log('AI SQL Flow: User context built with', disabledCategories.length, 'disabled categories');
+          }
+
+          // Also fetch disabled expenses for restoration context
+          const disabledExpenses = await prisma.expense.findMany({
+            where: { 
+              categoryId: { in: categories.map(c => c.id) },
+              isDisabled: true 
+            },
+            take: 20,
+            orderBy: { date: 'desc' },
+            include: { category: true }
+          });
+          
+          if (disabledExpenses.length > 0) {
+            userContext += `\nDISABLED EXPENSES (available for restoration):\n`;
+            disabledExpenses.forEach(exp => {
+              userContext += `- Expense: ${exp.description || 'No description'}, Amount: $${exp.amount}, Date: ${exp.date.toISOString().split('T')[0]}, Category: ${exp.category?.name || 'Unknown'}, Expense ID: ${exp.id}\n`;
+            });
+            console.log('AI SQL Flow: User context built with', disabledExpenses.length, 'disabled expenses');
+          }
         }
       } catch (error) {
         console.log('Could not fetch user context for SQL generation:', error);
       }
+      
+      timingMetrics.userContextBuilding = Date.now() - userContextStart;
+      console.log(`⏱️ User context building took: ${timingMetrics.userContextBuilding}ms`);
 
       // Get RAG context which includes validation rules
+      const ragStart = Date.now();
       const ragContext = await ragService.getContext(session.user.id, message);
+      timingMetrics.ragContext = Date.now() - ragStart;
+      console.log(`⏱️ RAG context generation took: ${timingMetrics.ragContext}ms`);
       
       // Enhanced system prompt for SQL generation - learns from RAG context
       let sqlSystemPrompt =`You are an AI assistant for "Manage My Expenses" that can generate SQL queries for database operations.
 
-*** CRITICAL EXISTENCE VALIDATION FOR SELECT QUERIES ***
-IMPORTANT: This is the FIRST and MOST IMPORTANT thing you must do when a user asks for data from a specific book or category.
-1. IMMEDIATELY check if the mentioned book exists in YOUR BOOKS section
-3. If the category name doesn't exist, respond with: "I couldn't find a category named '[category name]' in your account. Your available categories are: [extract and list all category names from the YOUR CATEGORIES section, separated by commas]"
-4. ONLY generate SQL SELECT queries if all mentioned books and categories exist
-5. Do NOT generate SQL for non-existent books or categories - respond with the error message instead
-6. To extract book names: Look for "Book Name: [name]" in the YOUR BOOKS section and list them
-7. To extract category names: Look for "Category Name: [name]" in the YOUR CATEGORIES section and list them
+*** CRITICAL: ONLY RESPOND TO THE CURRENT USER MESSAGE ***
+You are provided with conversation history for context, but you MUST ONLY respond to the CURRENT user message at the end of this prompt. Do NOT generate SQL queries or responses for previous messages in the conversation history. Focus ONLY on the most recent user message and generate SQL queries ONLY for that specific request.
 
-CRITICAL WARNING: If you generate SQL queries for non-existent books or categories, the results will be wrong and the user will get incorrect data. Always validate existence first!
+*** CRITICAL EXISTENCE VALIDATION FOR SELECT QUERIES AND RESTORATION ***
+IMPORTANT: This is the FIRST and MOST IMPORTANT thing you must do when a user asks for data from a specific book or category, or when they want to restore disabled items.
+1. IMMEDIATELY check if the mentioned book exists in YOUR BOOKS section
+2. IMMEDIATELY check if the mentioned category exists in YOUR CATEGORIES section
+3. For restoration requests, if the book exists in YOUR ARCHIVED BOOKS, generate the restoration UPDATE query
+4. For restoration requests, if the category exists in YOUR DISABLED CATEGORIES section, generate the restoration UPDATE query
+5. For restoration requests, if the expense exists in YOUR DISABLED EXPENSES section, generate the restoration UPDATE query
+6. If the category name does NOT exist in YOUR CATEGORIES or YOUR DISABLED CATEGORIES sections, respond with: "I couldn't find a category named '[category name]' in your account. Your available categories are: [extract and list all category names from YOUR CATEGORIES section, separated by commas]"
+7. If the user mentions restoring an expense that doesn't exist in YOUR DISABLED EXPENSES section, respond with: "I couldn't find a disabled expense matching your description. Your disabled expenses available for restoration are: [extract and list all disabled expenses from YOUR DISABLED EXPENSES section]"
+8. ONLY generate SQL SELECT queries if all mentioned books and categories exist in active sections
+9. For restoration, generate UPDATE queries to set isDisabled = false for items found in disabled sections
+10. Do NOT generate SQL for non-existent books, categories, or expenses - respond with the error message instead
+11. To extract book names: Look for "Book Name: [name]" in the YOUR BOOKS and YOUR ARCHIVED BOOKS sections and list them
+12. To extract category names: Look for "Category Name: [name]" in the YOUR CATEGORIES and YOUR DISABLED CATEGORIES sections and list them
+13. To extract expense descriptions: Look for expense descriptions in the YOUR DISABLED EXPENSES section and list them
+
+CRITICAL WARNING: If you generate SQL queries for non-existent books, categories, or expenses, the results will be wrong and the user will get incorrect data. Always validate existence first!
 
 *** CRITICAL INSTRUCTION FOR BOOK CREATION ***
 When user says: "create a new book called Test" or "add a book Test" or any variation:
@@ -1447,32 +1640,29 @@ When a user wants to disable, delete, or modify existing records, generate SQL U
 
 DEFAULT CATEGORIES SYSTEM:
 The application has predefined default categories that users can add to their books. Available default categories include:
-- Food & Dining (restaurants, groceries, food delivery)
-- Transportation (gas, public transport, rideshare, vehicle maintenance)  
-- Shopping (clothing, electronics, general purchases)
-- Entertainment (movies, games, concerts, hobbies)
-- Bills & Utilities (electricity, water, internet, phone bills)
-- Healthcare (medical expenses, insurance, pharmacy)
-- Education (books, courses, educational materials)
-- Travel (flights, hotels, vacation expenses)
-- Personal Care (haircuts, cosmetics, personal grooming)
-- Home & Garden (furniture, repairs, home improvement)
+- Food & Dining (restaurants, groceries, food delivery) - icon: Utensils
+- Transportation (gas, public transport, rideshare, vehicle maintenance) - icon: Car
+- Shopping (clothing, electronics, general purchases) - icon: ShoppingBag
+- Entertainment (movies, games, concerts, hobbies) - icon: Film
+- Bills & Utilities (electricity, water, internet, phone bills) - icon: Zap
+- Healthcare (medical expenses, insurance, pharmacy) - icon: Stethoscope
+- Education (books, courses, educational materials) - icon: Book
+- Travel (flights, hotels, vacation expenses) - icon: Plane
+- Personal Care (haircuts, cosmetics, personal grooming) - icon: Heart
+- Home & Garden (furniture, repairs, home improvement) - icon: Home
 
 HOW TO ADD DEFAULT CATEGORIES:
 When user requests to add a default category like "add Travel category to Company book" or "add the Travel category from default categories":
 1. IMMEDIATELY check if the mentioned book exists in YOUR BOOKS section
 2. If book doesn't exist, respond with: "I couldn't find a book named '[book name]' in your account. Your available books are: [list all book names from YOUR BOOKS section]"
-3. If book exists, generate SQL INSERT to create a new category record with:
-   - Same name as the default category
-   - Appropriate description and icon for that category
-   - bookId set to the target book's ID from YOUR BOOKS section
-   - isDefault = false (since this is a book-specific copy)
-   - All other fields with appropriate defaults
+3. If book exists, extract the exact Book ID from YOUR BOOKS section (the UUID after "Book ID: ")
+4. Generate SQL INSERT using that exact Book ID - DO NOT use placeholder IDs like 'book-123' or make up IDs
+5. Use the exact Book ID from the context provided above
 
-EXAMPLE: For "add Travel category to Company book" (assuming Company book ID is 'book-123'):
+EXAMPLE: For "add Bills & Utilities category to Company book" (assuming Company book ID is 'abc123-def456-ghi789'):
 \`\`\`sql
 INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) 
-VALUES (UUID(), 'Travel', 'Flights, hotels, and vacation expenses', 'book-123', 'Plane', '', false, false, NOW(), NOW())
+VALUES (UUID(), 'Bills & Utilities', 'Electricity, water, internet, phone bills', 'abc123-def456-ghi789', 'Zap', '', false, false, NOW(), NOW())
 \`\`\`
 
 CRITICAL RULES FOR DEFAULT CATEGORIES:
@@ -1488,23 +1678,22 @@ HOW TO ADD ALL DEFAULT CATEGORIES:
 When user requests to add ALL default categories like "add all default categories to Company book" or "add all defaults to Company" or "I want to add all defaults category to the Company" or "add all default categories":
 1. IMMEDIATELY check if the mentioned book exists in YOUR BOOKS section
 2. If book doesn't exist, respond with: "I couldn't find a book named '[book name]' in your account. Your available books are: [list all book names from YOUR BOOKS section]"
-3. If book exists, generate MULTIPLE SQL INSERT statements - one for each of the 10 default categories listed above
-4. Generate ALL categories in a single SQL code block with statements separated by semicolons
-5. Use the exact names, descriptions, and appropriate icons for each category
-6. Set bookId to the target book's ID and isDefault = false for all categories
+3. If book exists, extract the exact Book ID from YOUR BOOKS section (the UUID after "Book ID: ")
+4. Generate MULTIPLE SQL INSERT statements using that exact Book ID for all categories - DO NOT use placeholder IDs
+5. Use the exact Book ID from the context provided above for every INSERT statement
 
-EXAMPLE: For "add all default categories to Company book" (assuming Company book ID is 'book-123'):
+EXAMPLE: For "add all default categories to Company book" (assuming Company book ID is 'abc123-def456-ghi789'):
 \`\`\`sql
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Food & Dining', 'Restaurants, groceries, food delivery', 'book-123', 'Utensils', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Transportation', 'Gas, public transport, rideshare, vehicle maintenance', 'book-123', 'Car', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Shopping', 'Clothing, electronics, general purchases', 'book-123', 'ShoppingBag', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Entertainment', 'Movies, games, concerts, hobbies', 'book-123', 'Film', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Bills & Utilities', 'Electricity, water, internet, phone bills', 'book-123', 'Utility', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Healthcare', 'Medical expenses, insurance, pharmacy', 'book-123', 'Heart', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Education', 'Books, courses, educational materials', 'book-123', 'BookOpen', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Travel', 'Flights, hotels, vacation expenses', 'book-123', 'Plane', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Personal Care', 'Haircuts, cosmetics, personal grooming', 'book-123', 'User', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Home & Garden', 'Furniture, repairs, home improvement', 'book-123', 'Home', '', false, false, NOW(), NOW());
+INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Food & Dining', 'Restaurants, groceries, food delivery', 'abc123-def456-ghi789', 'Utensils', '', false, false, NOW(), NOW());
+INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Transportation', 'Gas, public transport, rideshare, vehicle maintenance', 'abc123-def456-ghi789', 'Car', '', false, false, NOW(), NOW());
+INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Shopping', 'Clothing, electronics, general purchases', 'abc123-def456-ghi789', 'ShoppingBag', '', false, false, NOW(), NOW());
+INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Entertainment', 'Movies, games, concerts, hobbies', 'abc123-def456-ghi789', 'Film', '', false, false, NOW(), NOW());
+INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Bills & Utilities', 'Electricity, water, internet, phone bills', 'abc123-def456-ghi789', 'Zap', '', false, false, NOW(), NOW());
+INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Healthcare', 'Medical expenses, insurance, pharmacy', 'abc123-def456-ghi789', 'Stethoscope', '', false, false, NOW(), NOW());
+INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Education', 'Books, courses, educational materials', 'abc123-def456-ghi789', 'Book', '', false, false, NOW(), NOW());
+INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Travel', 'Flights, hotels, vacation expenses', 'abc123-def456-ghi789', 'Plane', '', false, false, NOW(), NOW());
+INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Personal Care', 'Haircuts, cosmetics, personal grooming', 'abc123-def456-ghi789', 'Heart', '', false, false, NOW(), NOW());
+INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Home & Garden', 'Furniture, repairs, home improvement', 'abc123-def456-ghi789', 'Home', '', false, false, NOW(), NOW());
 \`\`\`
 
 CRITICAL RULES FOR ADDING ALL DEFAULT CATEGORIES:
@@ -1777,7 +1966,11 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
       // Add current user message
       messages.push({ role: 'user', content: message })
       
+      // Call AI API and measure timing
+      const aiApiStart = Date.now();
       const completion = await callOpenRouterAPI(messages);
+      timingMetrics.aiApiCall = Date.now() - aiApiStart;
+      console.log(`⏱️ AI API call took: ${timingMetrics.aiApiCall}ms`);
       
       // Validate the API response structure
       if (!completion || !completion.choices || !Array.isArray(completion.choices) || completion.choices.length === 0) {
@@ -1808,6 +2001,7 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
       }
       
       // Extract SQL queries from AI response (handle multiple)
+      const sqlExtractionStart = Date.now();
       const sqlMatches = aiResponse.match(/```sql\n([\s\S]*?)\n```/g);
       const sqlQueries: string[] = [];
       
@@ -1825,6 +2019,9 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
           console.log(`AI SQL Flow: Query ${i+1}:`, query.substring(0, 100) + '...');
         });
       }
+      
+      timingMetrics.sqlExtraction = Date.now() - sqlExtractionStart;
+      console.log(`⏱️ SQL extraction took: ${timingMetrics.sqlExtraction}ms`);
       
       // Check if AI should have generated SQL but didn't
       const isCreationRequest = message.toLowerCase().includes('create') || 
@@ -1893,6 +2090,7 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
         }
         
         // Process all SQL queries
+        const sqlExecutionStart = Date.now();
         const results = [];
         let allSuccessful = true;
         const addedRecords = [];
@@ -2035,23 +2233,15 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
                 console.log('Could not fetch user data for success message formatting:', error);
               }
 
-              // Count how many INSERT statements are in this SQL query
-              const insertStatements = sqlQuery.split(';').filter(stmt => stmt.trim().toLowerCase().includes('insert')).length;
-              const numRecords = Math.max(insertStatements, 1); // At least 1 if no semicolons
-
-              // Split the SQL query into individual statements for formatting
-              const statements = sqlQuery.split(';').map(stmt => stmt.trim()).filter(stmt => stmt.length > 0 && stmt.toLowerCase().includes('insert'));
-
-              // Add a success message for each record that was added
-              for (let i = 0; i < numRecords; i++) {
-                const statementSql = statements[i] || sqlQuery; // Use individual statement if available, otherwise whole query
-
-                // Add conversion info if available for display (only for the first record if multiple)
-                if (conversionInfo && i === 0) {
-                  addedRecords.push(`${formatSuccessMessage(statementSql, executionResult, userBooks, categories)} (amount: ${conversionInfo.convertedAmount} converted from ${conversionInfo.originalAmount} ${conversionInfo.detectedCurrency})`);
-                } else {
-                  addedRecords.push(formatSuccessMessage(statementSql, executionResult, userBooks, categories));
-                }
+              // Add one success message per executed SQL query
+              // Each query in sqlQueries array is already a separate INSERT statement
+              const successMessage = formatSuccessMessage(sqlQuery, executionResult, userBooks, categories);
+              
+              // Add conversion info if available for display
+              if (conversionInfo) {
+                addedRecords.push(`${successMessage} (converted from ${conversionInfo.originalAmount} ${conversionInfo.detectedCurrency} at rate ${conversionInfo.exchangeRate})`);
+              } else {
+                addedRecords.push(successMessage);
               }
             } else {
               allSuccessful = false;
@@ -2122,6 +2312,9 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
             allSuccessful = false;
           }
         }
+        
+        timingMetrics.sqlExecution = Date.now() - sqlExecutionStart;
+        console.log(`⏱️ SQL execution took: ${timingMetrics.sqlExecution}ms`);
         
         // Generate comprehensive response
         if (allSuccessful) {
@@ -2502,6 +2695,19 @@ Use this context to:
       aiResponse = '⚠️ Warning: The AI generated a success message but no database operation was performed. Please ask for a specific operation (e.g., "Create a book called Test" or "Show me all expenses").';
     }
     
+    // Calculate total time
+    timingMetrics.totalTime = Date.now() - timingMetrics.startTime;
+    console.log(`⏱️ Total processing time: ${timingMetrics.totalTime}ms`);
+    console.log('⏱️ Timing breakdown:', JSON.stringify({
+      sessionRetrieval: `${timingMetrics.sessionRetrieval}ms`,
+      userContextBuilding: `${timingMetrics.userContextBuilding}ms`,
+      ragContext: `${timingMetrics.ragContext}ms`,
+      aiApiCall: `${timingMetrics.aiApiCall}ms`,
+      sqlExtraction: `${timingMetrics.sqlExtraction}ms`,
+      sqlExecution: `${timingMetrics.sqlExecution}ms`,
+      totalTime: `${timingMetrics.totalTime}ms`
+    }, null, 2));
+    
     // Also check if the AI generated a success message with SQL but the SQL was invalid
     if ((fakeSuccessPattern.test(aiResponse) || fakeSystemResponsePattern.test(aiResponse)) && sqlQuery) {
       console.log('AI SQL Flow: AI generated success message with SQL - this is unexpected');
@@ -2518,7 +2724,16 @@ Use this context to:
         relevantDocs: ragContext.relevantDocs,
         userContext: ragContext.userContext
       } : null,
-      requiresConfirmation: false
+      requiresConfirmation: false,
+      timingMetrics: {
+        sessionRetrieval: timingMetrics.sessionRetrieval,
+        userContextBuilding: timingMetrics.userContextBuilding,
+        ragContext: timingMetrics.ragContext,
+        aiApiCall: timingMetrics.aiApiCall,
+        sqlExtraction: timingMetrics.sqlExtraction,
+        sqlExecution: timingMetrics.sqlExecution,
+        totalTime: timingMetrics.totalTime
+      }
     })
   
 }

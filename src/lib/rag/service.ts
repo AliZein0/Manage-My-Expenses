@@ -49,18 +49,28 @@ export class RAGService {
       const allBooks = [...activeBooks, ...archivedBooks]
       const activeBookIds = activeBooks.map(book => book.id)
 
-      // Get user's categories
-      const categories = await prisma.category.findMany({
+      // Get user's active categories
+      const activeCategories = await prisma.category.findMany({
         where: { 
           bookId: { in: activeBookIds },
           isDisabled: false 
         }
       })
 
-      const categoryIds = categories.map(cat => cat.id)
+      // Also get disabled categories for restoration context
+      const disabledCategories = await prisma.category.findMany({
+        where: { 
+          bookId: { in: activeBookIds },
+          isDisabled: true 
+        }
+      })
 
-      // Get user's expense data
-      const expenses = await prisma.expense.findMany({
+      // Combine all categories for context
+      const categories = [...activeCategories, ...disabledCategories]
+      const categoryIds = activeCategories.map(cat => cat.id)
+
+      // Get user's expense data (active expenses for statistics)
+      const activeExpenses = await prisma.expense.findMany({
         where: { 
           categoryId: { in: categoryIds },
           isDisabled: false 
@@ -70,14 +80,28 @@ export class RAGService {
         include: { category: true }
       })
 
+      // Also get disabled expenses for restoration context
+      const disabledExpenses = await prisma.expense.findMany({
+        where: { 
+          categoryId: { in: categoryIds },
+          isDisabled: true 
+        },
+        take: 10,
+        orderBy: { date: 'desc' },
+        include: { category: true }
+      })
+
+      // Combine all expenses for context
+      const expenses = [...activeExpenses, ...disabledExpenses]
+
       // Note: Report model doesn't exist in current schema
 
-      // Calculate spending statistics
-      const totalSpending = expenses.reduce((sum, exp) => sum + exp.amount, 0)
-      const avgExpense = expenses.length > 0 ? totalSpending / expenses.length : 0
+      // Calculate spending statistics (only from active expenses)
+      const totalSpending = activeExpenses.reduce((sum, exp) => sum + exp.amount, 0)
+      const avgExpense = activeExpenses.length > 0 ? totalSpending / activeExpenses.length : 0
 
-      // Group by category
-      const categoryBreakdown = expenses.reduce((acc, exp) => {
+      // Group by category (only from active expenses)
+      const categoryBreakdown = activeExpenses.reduce((acc, exp) => {
         const catName = exp.category?.name || 'Uncategorized'
         acc[catName] = (acc[catName] || 0) + exp.amount
         return acc
@@ -141,7 +165,7 @@ CRITICAL: For INSERT operations, your job is ONLY to generate SQL queries in cod
 GOOD EXAMPLES (what you should generate):
 - For book creation: \`\`\`sql\nINSERT INTO books (id, name, description, currency, isArchived, userId, createdAt, updatedAt) VALUES (UUID(), 'Test', '', 'USD', false, 'user-id', NOW(), NOW())\n\`\`\`
 - For category creation: \`\`\`sql\nINSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, createdAt, updatedAt) VALUES (UUID(), 'C1', '', 'book-id', '', '', false, NOW(), NOW())\n\`\`\`
-- For expense creation: \`\`\`sql\nINSERT INTO expenses (id, amount, date, description, categoryId, paymentMethod, isDisabled, createdAt, updatedAt) VALUES (UUID(), 100.00, CURDATE(), '', 'category-id', 'Other', false, NOW(), NOW())\n\`\`\`
+- For expense creation: \`\`\`sql\nINSERT INTO expenses (id, amount, date, description, categoryId, paymentMethod, isDisabled, createdAt, updatedAt) VALUES (UUID(), 100.00, CURDATE(), '', 'category-id', 'Cash', false, NOW(), NOW())\n\`\`\`
 - For SELECT queries: \`\`\`sql\nSELECT * FROM books WHERE userId = 'user-id'\n\`\`\`
 
 AFTER SELECT QUERY EXECUTION - FORMAT RESULTS NATURALLY:
@@ -216,10 +240,10 @@ When user says "add Travel category to Company book" or "add the Travel category
 3. Use the exact name from the default categories list
 4. Set isDefault = false and provide the correct bookId
 
-EXAMPLE SQL for adding Travel category:
+EXAMPLE SQL for adding Bills & Utilities category:
 \`\`\`sql
 INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) 
-VALUES (UUID(), 'Travel', 'Flights, hotels, and vacation expenses', '[book-id]', 'Plane', '', false, false, NOW(), NOW())
+VALUES (UUID(), 'Bills & Utilities', 'Electricity, water, internet, phone bills', '[book-id-from-your-books-section]', 'Zap', '', false, false, NOW(), NOW())
 \`\`\`
 
 CRITICAL: When adding default categories, you MUST create a new category record with isDefault = false and the correct bookId. Do NOT try to update existing default categories. Do NOT set isDefault = true for book-specific categories.`,
@@ -296,11 +320,11 @@ AVAILABLE DEFAULT CATEGORIES (generate INSERT for each):
 - Transportation (Gas, public transport, rideshare, vehicle maintenance) - icon: Car
 - Shopping (Clothing, electronics, general purchases) - icon: ShoppingBag
 - Entertainment (Movies, games, concerts, hobbies) - icon: Film
-- Bills & Utilities (Electricity, water, internet, phone bills) - icon: Utility
-- Healthcare (Medical expenses, insurance, pharmacy) - icon: Heart
-- Education (Books, courses, educational materials) - icon: BookOpen
+- Bills & Utilities (Electricity, water, internet, phone bills) - icon: Zap
+- Healthcare (Medical expenses, insurance, pharmacy) - icon: Stethoscope
+- Education (Books, courses, educational materials) - icon: Book
 - Travel (Flights, hotels, vacation expenses) - icon: Plane
-- Personal Care (Haircuts, cosmetics, personal grooming) - icon: User
+- Personal Care (Haircuts, cosmetics, personal grooming) - icon: Heart
 - Home & Garden (Furniture, repairs, home improvement) - icon: Home
 
 CRITICAL: Generate ONE SQL code block with 10 separate INSERT statements separated by semicolons. Do NOT generate individual category requests for "add all" requests.`,
@@ -546,18 +570,20 @@ BAD EXAMPLES (what you should NOT generate):
 RESTORATION VALIDATION STEPS:
 1. Check if the mentioned item exists in YOUR BOOKS or YOUR ARCHIVED BOOKS sections
 2. For books: Check both active books (YOUR BOOKS) and archived books (YOUR ARCHIVED BOOKS) sections
-3. For categories/expenses: Verify they exist in the provided context
-4. If the item doesn't exist at all, respond: "I couldn't find '[item name]' in your account. Please check the name and try again."
-5. If the item exists in YOUR BOOKS but is already active, respond: "The '[item name]' is already active and doesn't need restoration."
-6. If the item exists in YOUR ARCHIVED BOOKS, generate the restoration UPDATE query
-7. ONLY generate restoration queries for items found in YOUR ARCHIVED BOOKS section
+3. For categories: Check both YOUR CATEGORIES section AND DISABLED CATEGORIES section
+4. For expenses: Expenses are identified by their details, not just names
+5. If the item doesn't exist at all, respond: "I couldn't find '[item name]' in your account. Please check the name and try again."
+6. If the item exists in YOUR BOOKS but is already active, respond: "The '[item name]' is already active and doesn't need restoration."
+7. If the item exists in YOUR ARCHIVED BOOKS, generate the restoration UPDATE query for books
+8. If the item exists in DISABLED CATEGORIES section, generate the restoration UPDATE query for categories
+9. ONLY generate restoration queries for items found in archived/disabled state
 
 RESTORATION CONTEXT CHECKING:
 - For books: Look in both YOUR BOOKS and YOUR ARCHIVED BOOKS sections
-- For categories: Look in YOUR CATEGORIES section for the category name
+- For categories: Look in both YOUR CATEGORIES section AND DISABLED CATEGORIES section
 - For expenses: Expenses are identified by their details, not just names
 
-CRITICAL: For restoration requests, always check YOUR ARCHIVED BOOKS section first. Only generate restoration SQL for books found in the archived section.`,
+CRITICAL: For restoration requests, check both active and disabled/archived sections. Generate restoration SQL for items found in disabled/archived state.`,
           metadata: { type: 'validation', rule: 'restoration-existence' }
         },
       ];
@@ -574,13 +600,27 @@ CRITICAL: For restoration requests, always check YOUR ARCHIVED BOOKS section fir
             content: `Category breakdown: ${JSON.stringify(categoryBreakdown)}`,
             metadata: { type: 'analysis' }
           },
+          {
+            id: 'disabled-categories',
+            content: `DISABLED CATEGORIES (available for restoration): ${disabledCategories.length > 0 ? disabledCategories.map(cat => `${cat.name} (ID: ${cat.id})`).join(', ') : 'None'}. These categories are currently disabled but can be restored by setting isDisabled = false.`,
+            metadata: { type: 'restoration', count: disabledCategories.length }
+          },
+          {
+            id: 'disabled-expenses',
+            content: `DISABLED EXPENSES (available for restoration): ${disabledExpenses.length > 0 ? disabledExpenses.map(exp => `${exp.description || 'No description'} - $${exp.amount} (${exp.category?.name || 'Unknown category'}, ID: ${exp.id})`).join(', ') : 'None'}. These expenses are currently disabled but can be restored by setting isDisabled = false.`,
+            metadata: { type: 'restoration', count: disabledExpenses.length }
+          },
           ...validationDocs  // Include validation rules in RAG context
         ],
         userContext: {
           totalExpenses: expenses.length,
+          activeExpenses: activeExpenses.length,
+          disabledExpenses: disabledExpenses.length,
           totalSpending,
           avgExpense,
           categories: categories.length,
+          activeCategories: activeCategories.length,
+          disabledCategories: disabledCategories.length,
           books: activeBooks.length,
           archivedBooks: archivedBooks.length,
           totalBooks: allBooks.length,

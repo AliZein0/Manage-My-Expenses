@@ -15,13 +15,32 @@ interface Suggestion {
   icon: string
 }
 
+interface TimingMetrics {
+  sessionRetrieval?: number
+  userContextBuilding?: number
+  ragContext?: number
+  aiApiCall?: number
+  sqlExtraction?: number
+  sqlExecution?: number
+  totalTime: number
+}
+
+interface Message {
+  role: "user" | "assistant"
+  content: string
+  timingMetrics?: TimingMetrics
+}
+
 export function AIFloatWidget() {
-  const [messages, setMessages] = useState<Array<{ role: "user" | "assistant"; content: string }>>([])
+  const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [isExpanded, setIsExpanded] = useState(false)
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
+  const [showTimingDetails, setShowTimingDetails] = useState(false)
+  const [useStreaming, setUseStreaming] = useState(true)
+  const [streamingContent, setStreamingContent] = useState("")
   const { toast } = useToast()
   const router = useRouter()
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -62,55 +81,119 @@ export function AIFloatWidget() {
 
     const userMessage = { role: "user" as const, content: input }
     setMessages(prev => [...prev, userMessage])
+    const currentInput = input
     setInput("")
     setIsLoading(true)
+    setStreamingContent("")
 
     try {
-      // Prepare conversation history (exclude the current message)
+      // Prepare conversation history
       const conversationHistory = messages.map(msg => ({
         role: msg.role,
         content: msg.content
       }))
 
-      // First, get RAG context
-      const ragResponse = await fetch("/api/ai", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          message: input,
-          conversationHistory: conversationHistory,
-          context: { include: true }
+      if (useStreaming) {
+        // Use streaming endpoint
+        const response = await fetch("/api/ai/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+            message: currentInput,
+            conversationHistory: conversationHistory
+          })
         })
-      })
 
-      if (!ragResponse.ok) {
-        const errorData = await ragResponse.json()
-        
-        // Handle authentication error specifically
-        if (ragResponse.status === 401 || errorData.error?.includes('session')) {
-          throw new Error('Please sign in to use the AI Assistant. Your session may have expired.')
+        if (!response.ok) {
+          throw new Error('Streaming request failed')
+        }
+
+        const reader = response.body?.getReader()
+        const decoder = new TextDecoder()
+        let fullContent = ''
+        let timingData: TimingMetrics | undefined
+
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+
+            const chunk = decoder.decode(value, { stream: true })
+            const lines = chunk.split('\n').filter(line => line.trim() !== '')
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.slice(6))
+
+                  if (data.type === 'content') {
+                    fullContent += data.content
+                    setStreamingContent(fullContent)
+                  } else if (data.type === 'timing' || data.type === 'timing-final') {
+                    timingData = data.timing
+                  } else if (data.type === 'done') {
+                    const assistantMessage: Message = {
+                      role: "assistant",
+                      content: fullContent || data.fullResponse,
+                      timingMetrics: timingData
+                    }
+                    setMessages(prev => [...prev, assistantMessage])
+                    setStreamingContent("")
+                    
+                    if (timingData) {
+                      console.log('⏱️ Streaming Response Timing:', timingData)
+                    }
+                  } else if (data.type === 'error') {
+                    throw new Error(data.error)
+                  }
+                } catch (e) {
+                  console.error('Error parsing stream data:', e)
+                }
+              }
+            }
+          }
+        }
+      } else {
+        // Use regular endpoint (existing code)
+        const ragResponse = await fetch("/api/ai", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+            message: currentInput,
+            conversationHistory: conversationHistory,
+            context: { include: true }
+          })
+        })
+
+        if (!ragResponse.ok) {
+          const errorData = await ragResponse.json()
+          
+          if (ragResponse.status === 401 || errorData.error?.includes('session')) {
+            throw new Error('Please sign in to use the AI Assistant. Your session may have expired.')
+          }
+          
+          throw new Error(errorData.error || "Failed to get response")
+        }
+
+        const data = await ragResponse.json()
+        const responseContent = data.response
+
+        const assistantMessage: Message = { 
+          role: "assistant" as const, 
+          content: responseContent,
+          timingMetrics: data.timingMetrics
         }
         
-        throw new Error(errorData.error || "Failed to get response")
-      }
+        setMessages(prev => [...prev, assistantMessage])
+        
+        if (data.timingMetrics) {
+          console.log('⏱️ AI Response Timing:', data.timingMetrics)
+        }
 
-      const data = await ragResponse.json()
-      
-      // Use the response as-is (API now removes SQL from responses)
-      const responseContent = data.response;
-      
-      // Add AI response to messages
-      const assistantMessage = { 
-        role: "assistant" as const, 
-        content: responseContent
-      }
-      
-      setMessages(prev => [...prev, assistantMessage])
-
-      // Generate suggestions based on the conversation
-      if (data.response) {
-        const suggestions = generateSuggestions(data.response)
-        setSuggestions(suggestions)
+        if (data.response) {
+          const suggestions = generateSuggestions(data.response)
+          setSuggestions(suggestions)
+        }
       }
       
     } catch (error) {
@@ -234,8 +317,18 @@ export function AIFloatWidget() {
             <div className="flex items-center gap-2">
               <Bot className="w-4 h-4" />
               <CardTitle className="text-base">AI Assistant</CardTitle>
+              {useStreaming && <span className="text-[10px] bg-white/20 px-1.5 py-0.5 rounded">⚡ Streaming</span>}
             </div>
             <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setUseStreaming(!useStreaming)}
+                className="text-white hover:bg-white/20 p-1 h-7 w-7"
+                title={useStreaming ? "Switch to regular mode" : "Switch to streaming mode"}
+              >
+                <Sparkles className={`w-3 h-3 ${useStreaming ? 'text-yellow-300' : ''}`} />
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"
@@ -321,6 +414,62 @@ export function AIFloatWidget() {
                         : "bg-white border border-gray-200 shadow-sm"
                     }`}>
                       <div className="whitespace-pre-wrap">{msg.content}</div>
+                      
+                      {/* Display timing metrics for assistant messages */}
+                      {msg.role === "assistant" && msg.timingMetrics && (
+                        <div className="mt-2 pt-2 border-t border-gray-200">
+                          <div className="flex items-center justify-between text-[10px] text-gray-500">
+                            <span className="font-medium">⏱️ Total: {msg.timingMetrics.totalTime}ms</span>
+                            <button
+                              onClick={() => setShowTimingDetails(!showTimingDetails)}
+                              className="text-purple-600 hover:text-purple-700 underline"
+                            >
+                              {showTimingDetails ? 'Hide' : 'Show'} details
+                            </button>
+                          </div>
+                          
+                          {showTimingDetails && (
+                            <div className="mt-1 space-y-0.5 text-[9px] text-gray-600">
+                              {msg.timingMetrics.sessionRetrieval !== undefined && (
+                                <div className="flex justify-between">
+                                  <span>Session retrieval:</span>
+                                  <span className="font-mono">{msg.timingMetrics.sessionRetrieval}ms</span>
+                                </div>
+                              )}
+                              {msg.timingMetrics.userContextBuilding !== undefined && (
+                                <div className="flex justify-between">
+                                  <span>User context building:</span>
+                                  <span className="font-mono">{msg.timingMetrics.userContextBuilding}ms</span>
+                                </div>
+                              )}
+                              {msg.timingMetrics.ragContext !== undefined && (
+                                <div className="flex justify-between">
+                                  <span>RAG context generation:</span>
+                                  <span className="font-mono">{msg.timingMetrics.ragContext}ms</span>
+                                </div>
+                              )}
+                              {msg.timingMetrics.aiApiCall !== undefined && (
+                                <div className="flex justify-between">
+                                  <span>AI API call:</span>
+                                  <span className="font-mono">{msg.timingMetrics.aiApiCall}ms</span>
+                                </div>
+                              )}
+                              {msg.timingMetrics.sqlExtraction !== undefined && (
+                                <div className="flex justify-between">
+                                  <span>SQL extraction:</span>
+                                  <span className="font-mono">{msg.timingMetrics.sqlExtraction}ms</span>
+                                </div>
+                              )}
+                              {msg.timingMetrics.sqlExecution !== undefined && (
+                                <div className="flex justify-between">
+                                  <span>SQL execution:</span>
+                                  <span className="font-mono">{msg.timingMetrics.sqlExecution}ms</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))
@@ -329,7 +478,20 @@ export function AIFloatWidget() {
                 <div className="flex justify-start">
                   <div className="bg-white border border-gray-200 p-2 rounded-lg flex items-center gap-2 shadow-sm">
                     <Loader2 className="w-3 h-3 animate-spin text-purple-600" />
-                    <span className="text-xs text-gray-600">Thinking...</span>
+                    <span className="text-xs text-gray-600">
+                      {streamingContent ? 'Streaming...' : 'Processing...'}
+                    </span>
+                  </div>
+                </div>
+              )}
+              {streamingContent && isLoading && (
+                <div className="flex justify-start">
+                  <div className="max-w-[90%] p-2 rounded-lg text-sm bg-white border border-gray-200 shadow-sm">
+                    <div className="whitespace-pre-wrap">{streamingContent}</div>
+                    <div className="mt-1 text-[10px] text-gray-400 flex items-center gap-1">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Streaming response...
+                    </div>
                   </div>
                 </div>
               )}

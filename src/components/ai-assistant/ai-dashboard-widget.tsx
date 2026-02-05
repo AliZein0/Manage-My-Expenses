@@ -309,7 +309,7 @@ export function AIDashboardWidget() {
               <div className="flex justify-start">
                 <div className="bg-white border border-gray-200 p-2 rounded-lg flex items-center gap-2 shadow-sm">
                   <Loader2 className="w-3 h-3 animate-spin text-purple-600" />
-                  <span className="text-xs text-gray-600">Thinking...</span>
+                  <span className="text-xs text-gray-600">Processing...</span>
                 </div>
               </div>
             )}

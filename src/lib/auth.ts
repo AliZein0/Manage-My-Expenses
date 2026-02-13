@@ -46,7 +46,7 @@ export const authOptions: NextAuthOptions = {
       },
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) {
-          return null
+          throw new Error("Email and password are required")
         }
 
         const prisma = getPrismaClient()
@@ -54,14 +54,18 @@ export const authOptions: NextAuthOptions = {
           where: { email: credentials.email },
         })
 
-        if (!user || !user.password) {
-          return null
+        if (!user) {
+          throw new Error("No account found with this email address")
+        }
+
+        if (!user.password) {
+          throw new Error("Account setup incomplete. Please contact support.")
         }
 
         const isValid = await bcrypt.compare(credentials.password, user.password)
 
         if (!isValid) {
-          return null
+          throw new Error("Incorrect password")
         }
 
         return {

@@ -39,6 +39,17 @@ import {
   Sun,
   Moon,
   Star,
+  FileText,
+  Megaphone,
+  Monitor,
+  Users,
+  Shield,
+  Lightbulb,
+  DollarSign,
+  Receipt,
+  Scale,
+  Code,
+  MoreHorizontal,
 } from 'lucide-react'
 
 const iconMap: { [key: string]: any } = {
@@ -81,6 +92,17 @@ const iconMap: { [key: string]: any } = {
   Sun,
   Moon,
   Star,
+  FileText,
+  Megaphone,
+  Monitor,
+  Users,
+  Shield,
+  Lightbulb,
+  DollarSign,
+  Receipt,
+  Scale,
+  Code,
+  MoreHorizontal,
 }
 
 interface CategoryIconProps {

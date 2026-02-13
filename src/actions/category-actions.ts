@@ -531,21 +531,21 @@ export async function addDefaultCategoryToBook(defaultCategoryId: string, bookId
       return { error: "User not found in database" }
     }
 
-    // Verify the default category exists and is indeed default
+    // Verify the default category exists
     const defaultCategory = await prisma.category.findUnique({
-      where: { id: defaultCategoryId, isDefault: true },
+      where: { id: defaultCategoryId },
     })
 
-    if (!defaultCategory) {
+    if (!defaultCategory || !defaultCategory.isDefault) {
       return { error: "Default category not found" }
     }
 
-    // Verify user owns the book
+    // Verify the book exists and belongs to the user
     const book = await prisma.book.findUnique({
-      where: { id: bookId, userId: session.user.id },
+      where: { id: bookId },
     })
 
-    if (!book) {
+    if (!book || book.userId !== session.user.id) {
       return { error: "Book not found or access denied" }
     }
 
@@ -553,34 +553,34 @@ export async function addDefaultCategoryToBook(defaultCategoryId: string, bookId
       return { error: "Cannot add categories to archived books" }
     }
 
-    // Check if user already has this category in the book
+    // Check if this category is already added to the book
     const existingCategory = await prisma.category.findFirst({
       where: {
         name: defaultCategory.name,
         bookId: bookId,
-        isDefault: false,
-        isDisabled: false,
+        isDefault: false, // Look for user-created categories with same name
       },
     })
 
     if (existingCategory) {
-      return { error: "This category already exists in the book" }
+      return { error: `Category "${defaultCategory.name}" is already added to this book` }
     }
 
-    // Create a copy of the default category in the user's book
+    // Create the category for the book
     await prisma.category.create({
       data: {
         name: defaultCategory.name,
         description: defaultCategory.description,
         icon: defaultCategory.icon,
+        color: defaultCategory.color,
         bookId: bookId,
-        isDefault: false,
+        isDefault: false, // This is now a user category
       },
     })
 
     revalidatePath("/categories")
     revalidatePath(`/books/${bookId}`)
-    return { success: true }
+    return { success: true, message: `Category "${defaultCategory.name}" added to book successfully` }
   } catch (error) {
     console.error("Add default category error:", error)
     return { error: "Failed to add default category to book" }

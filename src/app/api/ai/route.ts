@@ -10,11 +10,10 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY
 
 // Runtime tunables (override from .env)
 const OPENROUTER_TEMPERATURE = parseFloat(process.env.OPENROUTER_TEMPERATURE || '0.7')
-const OPENROUTER_MAX_TOKENS = parseInt(process.env.OPENROUTER_MAX_TOKENS || '1000', 10)
+const OPENROUTER_MAX_TOKENS = parseInt(process.env.OPENROUTER_MAX_TOKENS || '4000', 10) // Increased for bulk operations like adding all default categories
 const APP_URL = process.env.APP_URL || process.env.NEXTAUTH_URL || 'https://localhost:3000'
 const APP_NAME = process.env.APP_NAME || 'Manage My Expenses'
-const ENABLE_AI_SQL_EXECUTION = (process.env.ENABLE_AI_SQL_EXECUTION || 'true').toLowerCase() === 'true'
-const ENABLE_STREAMING = (process.env.ENABLE_AI_STREAMING || 'true').toLowerCase() === 'true' 
+const ENABLE_AI_SQL_EXECUTION = (process.env.ENABLE_AI_SQL_EXECUTION || 'true').toLowerCase() === 'true' 
 
 // Model configuration with fallbacks - now loaded from env with safe defaults
 const MODEL_CONFIG = {
@@ -23,7 +22,7 @@ const MODEL_CONFIG = {
 } 
 
 // Helper function to call OpenRouter API with fallback support
-async function callOpenRouterAPI(messages: any[], model: string = MODEL_CONFIG.primary, stream: boolean = false) {
+async function callOpenRouterAPI(messages: any[], model: string = MODEL_CONFIG.primary) {
   try {
     const apiResponse = await fetch(`${OPENROUTER_API_URL}/chat/completions`, {
       method: 'POST',
@@ -38,7 +37,6 @@ async function callOpenRouterAPI(messages: any[], model: string = MODEL_CONFIG.p
         messages: messages,
         temperature: OPENROUTER_TEMPERATURE,
         max_tokens: OPENROUTER_MAX_TOKENS,
-        stream: stream,
       }),
     })
 
@@ -111,7 +109,6 @@ async function callOpenRouterAPI(messages: any[], model: string = MODEL_CONFIG.p
 
 
 
-// Helper function to convert currency using exchange rate API
 async function convertCurrency(amount: number, fromCurrency: string, toCurrency: string): Promise<{ convertedAmount: number; exchangeRate: number; success: boolean; error?: string }> {
   try {
     // If currencies are the same, no conversion needed
@@ -157,60 +154,106 @@ async function convertCurrency(amount: number, fromCurrency: string, toCurrency:
 
 // Helper function to extract amount and currency from message
 function extractAmountAndCurrency(message: string): { amount: number | null; currency: string | null; originalText: string } {
-  // Match patterns like "150 euro", "€150", "$50", "50 USD", etc.
-  const patterns = [
-    // Currency symbol + number: €150, $50, £25
-    /([$€£¥₹₽₩₺₫₪د.إ﷼KDد.ب﷼JODل.لEGP₦₱R$CHF₵A$NZ$krNkrDkrzłKčFtNT$฿RpRM₫₭₨₮₶₷₹₺₻₼₽₾₿][\d,]+\.?\d*)/i,
-    // Number + currency code: 150 EUR, 50 USD
-    /(\d+(?:,\d{3})*(?:\.\d{2})?)\s*(USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR|MXN|BRL|ZAR|RUB|KRW|SGD|HKD|NZD|SEK|NOK|DKK|PLN|CZK|HUF|TRY|TWD|THB|IDR|MYR|PHP|VND|ILS|AED|SAR|QAR|KWD|BHD|OMR|JOD|LBP|EGP|NGN|CLP|COP|PEN|ARS|UYU)/i,
-    // Currency code + number: EUR 150, USD 50
-    /(USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR|MXN|BRL|ZAR|RUB|KRW|SGD|HKD|NZD|SEK|NOK|DKK|PLN|CZK|HUF|TRY|TWD|THB|IDR|MYR|PHP|VND|ILS|AED|SAR|QAR|KWD|BHD|OMR|JOD|LBP|EGP|NGN|CLP|COP|PEN|ARS|UYU)\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i
-  ];
+  const results = extractAllAmountsAndCurrencies(message);
+  return results.length > 0 ? results[0] : { amount: null, currency: null, originalText: '' };
+}
 
-  for (const pattern of patterns) {
-    const match = message.match(pattern);
-    if (match) {
-      let amountStr = '';
-      let currency = '';
-      let originalText = match[0];
+// Helper function to extract ALL amounts and currencies from message (for multi-expense support)
+function extractAllAmountsAndCurrencies(message: string): Array<{ amount: number; currency: string; originalText: string }> {
+  const results: Array<{ amount: number; currency: string; originalText: string }> = [];
+  
+  // Currency word to code mapping
+  const currencyWordMap: Record<string, string> = {
+    'euro': 'EUR', 'euros': 'EUR',
+    'dollar': 'USD', 'dollars': 'USD',
+    'pound': 'GBP', 'pounds': 'GBP', 'sterling': 'GBP',
+    'yen': 'JPY',
+    'yuan': 'CNY', 'renminbi': 'CNY',
+    'rupee': 'INR', 'rupees': 'INR',
+    'ruble': 'RUB', 'rubles': 'RUB',
+    'won': 'KRW',
+    'lira': 'TRY',
+    'dong': 'VND',
+    'shekel': 'ILS', 'shekels': 'ILS',
+    'dirham': 'AED', 'dirhams': 'AED',
+    'riyal': 'SAR', 'riyals': 'SAR',
+    'peso': 'MXN', 'pesos': 'MXN',
+    'real': 'BRL', 'reais': 'BRL', 'reals': 'BRL',
+    'rand': 'ZAR',
+    'franc': 'CHF', 'francs': 'CHF',
+    'krona': 'SEK', 'krone': 'NOK',
+    'zloty': 'PLN',
+    'koruna': 'CZK',
+    'forint': 'HUF',
+    'baht': 'THB',
+    'ringgit': 'MYR',
+    'rupiah': 'IDR'
+  };
 
-      if (match[1] && match[1].match(/^\d/)) {
-        // Pattern: number + currency code
-        amountStr = match[1];
-        currency = match[2];
-      } else if (match[1] && match[2]) {
-        // Pattern: currency code + number
-        currency = match[1];
-        amountStr = match[2];
-      } else if (match[1]) {
-        // Pattern: currency symbol + number
-        const symbolMatch = match[1];
-        // Extract number from symbol + number
-        const numberMatch = symbolMatch.match(/[\d,]+\.?\d*/);
-        if (numberMatch) {
-          amountStr = numberMatch[0];
-          // Detect currency from symbol
-          const symbol = symbolMatch.replace(amountStr, '').trim();
-          const currencyMap: Record<string, string> = {
-            '$': 'USD', '€': 'EUR', '£': 'GBP', '¥': 'JPY', '₹': 'INR', '₽': 'RUB', '₩': 'KRW', '₺': 'TRY', '₫': 'VND', '₪': 'ILS', 'د.إ': 'AED', '﷼': 'SAR'
-          };
-          currency = currencyMap[symbol] || '';
-        }
-      }
+  const currencySymbolMap: Record<string, string> = {
+    '$': 'USD', '€': 'EUR', '£': 'GBP', '¥': 'JPY', '₹': 'INR', '₽': 'RUB', '₩': 'KRW', '₺': 'TRY', '₫': 'VND', '₪': 'ILS', 'د.إ': 'AED', '﷼': 'SAR'
+  };
 
-      if (amountStr && currency) {
-        // Clean amount string (remove commas)
-        const cleanAmount = amountStr.replace(/,/g, '');
-        const amount = parseFloat(cleanAmount);
-        
-        if (!isNaN(amount)) {
-          return { amount, currency: currency.toUpperCase(), originalText };
-        }
-      }
+  // Pattern 1a: Currency symbol + number (€150, $50, £25)
+  const symbolBeforePattern = /([$€£¥₹₽₩₺₫₪])([\d,]+\.?\d*)/g;
+  let match;
+  while ((match = symbolBeforePattern.exec(message)) !== null) {
+    const symbol = match[1];
+    const amountStr = match[2].replace(/,/g, '');
+    const amount = parseFloat(amountStr);
+    const currency = currencySymbolMap[symbol];
+    if (!isNaN(amount) && currency) {
+      results.push({ amount, currency, originalText: match[0] });
     }
   }
 
-  return { amount: null, currency: null, originalText: '' };
+  // Pattern 1b: Number + currency symbol (200$, 50€, 25£) - common in some regions
+  const symbolAfterPattern = /([\d,]+\.?\d*)([$€£¥₹₽₩₺₫₪])/g;
+  while ((match = symbolAfterPattern.exec(message)) !== null) {
+    const amountStr = match[1].replace(/,/g, '');
+    const symbol = match[2];
+    const amount = parseFloat(amountStr);
+    const currency = currencySymbolMap[symbol];
+    if (!isNaN(amount) && currency && !results.some(r => r.amount === amount && r.currency === currency)) {
+      results.push({ amount, currency, originalText: match[0] });
+    }
+  }
+
+  // Pattern 2: Number + currency code (150 EUR, 50 USD)
+  const codeAfterPattern = /(\d+(?:,\d{3})*(?:\.\d{2})?)\s*(USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR|MXN|BRL|ZAR|RUB|KRW|SGD|HKD|NZD|SEK|NOK|DKK|PLN|CZK|HUF|TRY|TWD|THB|IDR|MYR|PHP|VND|ILS|AED|SAR|QAR|KWD|BHD|OMR|JOD|LBP|EGP|NGN|CLP|COP|PEN|ARS|UYU)/gi;
+  while ((match = codeAfterPattern.exec(message)) !== null) {
+    const amountStr = match[1].replace(/,/g, '');
+    const amount = parseFloat(amountStr);
+    const currency = match[2].toUpperCase();
+    if (!isNaN(amount) && !results.some(r => r.amount === amount && r.currency === currency)) {
+      results.push({ amount, currency, originalText: match[0] });
+    }
+  }
+
+  // Pattern 3: Currency code + number (EUR 150, USD 50)
+  const codeBeforePattern = /(USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR|MXN|BRL|ZAR|RUB|KRW|SGD|HKD|NZD|SEK|NOK|DKK|PLN|CZK|HUF|TRY|TWD|THB|IDR|MYR|PHP|VND|ILS|AED|SAR|QAR|KWD|BHD|OMR|JOD|LBP|EGP|NGN|CLP|COP|PEN|ARS|UYU)\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/gi;
+  while ((match = codeBeforePattern.exec(message)) !== null) {
+    const currency = match[1].toUpperCase();
+    const amountStr = match[2].replace(/,/g, '');
+    const amount = parseFloat(amountStr);
+    if (!isNaN(amount) && !results.some(r => r.amount === amount && r.currency === currency)) {
+      results.push({ amount, currency, originalText: match[0] });
+    }
+  }
+
+  // Pattern 4: Number + currency word (15 euros, 50 dollars, 25 pounds)
+  const wordPattern = /(\d+(?:,\d{3})*(?:\.\d{2})?)\s*(euros?|dollars?|pounds?|sterling|yen|yuan|renminbi|rupees?|rubles?|won|lira|dong|shekels?|dirhams?|riyals?|pesos?|reais?|reals?|rand|francs?|krona|krone|zloty|koruna|forint|baht|ringgit|rupiah)/gi;
+  while ((match = wordPattern.exec(message)) !== null) {
+    const amountStr = match[1].replace(/,/g, '');
+    const amount = parseFloat(amountStr);
+    const currencyWord = match[2].toLowerCase();
+    const currency = currencyWordMap[currencyWord];
+    if (!isNaN(amount) && currency && !results.some(r => r.amount === amount && r.currency === currency)) {
+      results.push({ amount, currency, originalText: match[0] });
+    }
+  }
+
+  return results;
 }
 
 // Function to extract and format record values from SQL query
@@ -381,7 +424,7 @@ function parseSQLValues(valuesString: string): any[] {
 }
 
 // Function to format success messages based on SQL query type and data
-function formatSuccessMessage(sqlQuery: string, executionResult: any, userBooks: any[] = [], categories: any[] = []): string {
+function formatSuccessMessage(sqlQuery: string, executionResult: any, userBooks: any[] = [], categories: any[] = []): string | string[] {
   if (!executionResult.success) {
     return executionResult.error || 'Operation failed';
   }
@@ -436,10 +479,37 @@ function formatSuccessMessage(sqlQuery: string, executionResult: any, userBooks:
   }
 
   if (trimmedQuery.includes('into books')) {
-    const recordDetails = extractRecordValuesFromQuery(sqlQuery, userBooks, categories);
-    const nameMatch = sqlQuery.match(/VALUES\s*\(\s*UUID\(\)\s*,\s*'([^']+)'/);
-    const bookName = nameMatch ? nameMatch[1] : 'Book';
-    return `${bookName} book created${recordDetails ? ` (${recordDetails})` : ''}`;
+    // Check if there are multiple VALUES clauses
+    const valuesMatches = sqlQuery.match(/VALUES\s*\([^)]*\)/g);
+    if (valuesMatches && valuesMatches.length > 1) {
+      // Multiple books in one INSERT
+      const bookMessages: string[] = [];
+      for (const valuesMatch of valuesMatches) {
+        // Extract book name from this VALUES clause
+        const nameMatch = valuesMatch.match(/UUID\(\)\s*,\s*'([^']+)'/);
+        const bookName = nameMatch ? nameMatch[1] : 'Book';
+        // For books, we know the standard fields: name, description, currency, isArchived
+        // Extract them from the VALUES clause
+        const values = valuesMatch.match(/VALUES\s*\(\s*([^)]+)\)/);
+        if (values) {
+          const valueParts = values[1].split(',').map(v => v.trim());
+          // valueParts[0] is UUID(), [1] is name, [2] is description, [3] is currency, [4] is isArchived
+          const description = valueParts[2] ? valueParts[2].replace(/^['"]|['"]$/g, '') : '';
+          const currency = valueParts[3] ? valueParts[3].replace(/^['"]|['"]$/g, '') : 'USD';
+          const isArchived = valueParts[4] ? valueParts[4].replace(/^['"]|['"]$/g, '') : 'false';
+          bookMessages.push(`${bookName} book created (name: ${bookName}, description: ${description}, currency: ${currency}, isArchived: ${isArchived})`);
+        } else {
+          bookMessages.push(`${bookName} book created`);
+        }
+      }
+      return bookMessages;
+    } else {
+      // Single book
+      const recordDetails = extractRecordValuesFromQuery(sqlQuery, userBooks, categories);
+      const nameMatch = sqlQuery.match(/VALUES\s*\(\s*UUID\(\)\s*,\s*'([^']+)'/);
+      const bookName = nameMatch ? nameMatch[1] : 'Book';
+      return `${bookName} book created${recordDetails ? ` (${recordDetails})` : ''}`;
+    }
   }
 
   if (trimmedQuery.includes('into expenses')) {
@@ -530,38 +600,28 @@ async function executeDirectSQLWithValidation(query: string) {
       }
       
       // Check if bookId is a valid UUID (not a book name)
-      const bookIdMatch = query.match(/bookId\s*=\s*['"]([^'"]+)['"]/i);
+      const bookIdMatch = query.match(/bookId\s*=\s*['"]([^'"]+)['"]/i) || 
+                          query.match(/,\s*'([0-9a-f-]{20,})'\s*,/gi); // Also check VALUES format
       if (bookIdMatch) {
-        const bookId = bookIdMatch[1];
+        const bookId = bookIdMatch[1] || (typeof bookIdMatch[0] === 'string' ? bookIdMatch[0].replace(/[',\s]/g, '') : '');
+        
+        // Check for known placeholder UUIDs that AI sometimes generates
+        const placeholderUUIDs = [
+          '550e8400-e29b-41d4-a716-446655440000',
+          'test-book-123',
+          'example-id',
+          'book-id-here',
+          'category-id-here'
+        ];
+        
+        if (placeholderUUIDs.some(placeholder => query.includes(placeholder))) {
+          throw new Error(`❌ Invalid Book ID: AI generated a placeholder UUID instead of using the actual Book ID from your data. Please try again - say "add default categories to [book name]" and I'll use the correct ID.`);
+        }
+        
         // UUID pattern: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
         const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        if (!uuidPattern.test(bookId)) {
+        if (bookId && !uuidPattern.test(bookId) && !bookId.startsWith('cml')) {
           throw new Error(`Invalid bookId: "${bookId}". Book ID must be a valid UUID, not a book name.`);
-        }
-
-        // Check if the book actually exists in the database and user owns it
-        // We need to get the session to check ownership
-        let session = null;
-        try {
-          session = await getServerSession(authOptions);
-        } catch (error) {
-          throw new Error('Unable to verify user session');
-        }
-        
-        if (!session?.user?.id) {
-          throw new Error('User not authenticated');
-        }
-        
-        const bookExists = await prisma.book.findUnique({
-          where: { 
-            id: bookId,
-            userId: session.user.id,
-            isArchived: false
-          }
-        });
-        
-        if (!bookExists) {
-          throw new Error(`Book with ID "${bookId}" does not exist or you don't have access to it. Please check that the book exists and you own it before adding categories to it.`);
         }
       }
       
@@ -632,14 +692,98 @@ async function executeDirectSQLWithValidation(query: string) {
     
     return {
       success: true,
-      message: `Successfully added ${totalRowsAffected} record(s)`
+      message: `Successfully added ${totalRowsAffected} record(s)`,
+      rowCount: totalRowsAffected
     };
   } catch (error) {
     console.log('executeDirectSQLWithValidation: Query failed:', error);
+    
+    // Transform database errors into user-friendly messages
+    let userFriendlyError = 'Unknown error';
+    
+    if (error instanceof Error) {
+      const errorMessage = error.message;
+      
+      // MySQL error code 1062: Duplicate entry
+      if (errorMessage.includes('Code: `1062`') && errorMessage.includes('Duplicate entry')) {
+        // Extract the table and key information
+        const duplicateMatch = errorMessage.match(/Duplicate entry '([^']+)' for key '([^']+)'/);
+        if (duplicateMatch) {
+          const entryValue = duplicateMatch[1];
+          const keyName = duplicateMatch[2];
+          
+          // Parse the key name to determine what type of duplicate
+          if (keyName.includes('books_userId_name_key')) {
+            // Extract book name from the entry value (format: userId-bookName)
+            const parts = entryValue.split('-');
+            const bookName = parts.slice(1).join('-'); // Everything after the first dash
+            userFriendlyError = `A book named "${bookName}" already exists. Please choose a different name.`;
+          } else if (keyName.includes('categories_bookId_name_key')) {
+            // Extract category name
+            const parts = entryValue.split('-');
+            const categoryName = parts.slice(1).join('-');
+            userFriendlyError = `A category named "${categoryName}" already exists in this book. Please choose a different name.`;
+          } else if (keyName.includes('userId_email_key')) {
+            userFriendlyError = 'This email address is already registered.';
+          } else {
+            userFriendlyError = 'This record already exists. Please check your data and try again.';
+          }
+        } else {
+          userFriendlyError = 'This record already exists. Please check your data and try again.';
+        }
+      } 
+      // MySQL error code 1452: Foreign key constraint fails
+      else if (errorMessage.includes('Code: `1452`') || errorMessage.includes('foreign key constraint')) {
+        // Try to extract which constraint failed from the error message
+        // MySQL format: "a foreign key constraint fails (`db`.`table`, CONSTRAINT `name` FOREIGN KEY (`column`) REFERENCES `parent_table`)"
+        const constraintMatch = errorMessage.match(/FOREIGN KEY \(`([^`]+)`\) REFERENCES `([^`]+)`/i);
+        
+        if (constraintMatch) {
+          const column = constraintMatch[1];
+          const referencedTable = constraintMatch[2];
+          
+          if (column === 'categoryId' || referencedTable === 'categories') {
+            // Try to extract the bad categoryId from the query
+            const categoryIdMatch = query.match(/'([a-z0-9]{20,})'/gi);
+            const categoryId = categoryIdMatch ? categoryIdMatch[categoryIdMatch.length - 1]?.replace(/'/g, '') : 'unknown';
+            userFriendlyError = `❌ Cannot create this expense: The specified **category does not exist** (ID: ${categoryId}). Please verify the category exists or create it first.`;
+          } else if (column === 'bookId' || referencedTable === 'books') {
+            userFriendlyError = '❌ Cannot create this record: The specified **book does not exist**. Please check the book ID or create the book first.';
+          } else if (column === 'userId' || referencedTable === 'users') {
+            userFriendlyError = '❌ Cannot create this record: The specified **user does not exist**. Please check your authentication.';
+          } else {
+            userFriendlyError = `❌ Cannot create this record: The referenced ${referencedTable || 'item'} does not exist. Please verify your data.`;
+          }
+        } else {
+          // Fallback: try to guess from the query context
+          if (query.toLowerCase().includes('into expenses')) {
+            userFriendlyError = '❌ Cannot create this expense: The specified **category does not exist**. Please verify the category exists in the target book.';
+          } else if (query.toLowerCase().includes('into categories')) {
+            userFriendlyError = '❌ Cannot create this category: The specified **book does not exist**. Please verify the book exists.';
+          } else {
+            userFriendlyError = '❌ Cannot create this record: A referenced book or category does not exist. Please ensure all required items exist first.';
+          }
+        }
+      }
+      // MySQL error code 1406: Data too long
+      else if (errorMessage.includes('Code: `1406`') || errorMessage.includes('Data too long')) {
+        userFriendlyError = 'The provided data is too long. Please use shorter names or descriptions.';
+      }
+      // MySQL error code 1264: Out of range value
+      else if (errorMessage.includes('Code: `1264`') || errorMessage.includes('Out of range')) {
+        userFriendlyError = 'The provided number is too large. Please use smaller values.';
+      }
+      else {
+        // Keep the original error message for other cases
+        userFriendlyError = errorMessage;
+      }
+    }
+    
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-      message: ' Operation Failed '
+      error: userFriendlyError,
+      message: 'Operation Failed',
+      rowCount: 0
     };
   }
 }
@@ -719,26 +863,36 @@ async function formatSelectResultsWithAI(selectResults: any[], originalMessage: 
     });
 
     // Create system prompt for formatting
-    const formatSystemPrompt = `You are an AI assistant that formats database query results into natural, user-friendly responses.
+    const formatSystemPrompt = `You are a data formatting assistant for "Manage My Expenses". Your job is to format database query results into clean, readable responses.
 
-Your task is to take the JSON data from database queries and present it in a conversational, readable format.
+CRITICAL INSTRUCTIONS:
+- Provide DIRECT responses without introductory explanations or meta-commentary
+- Do NOT say things like "Here are your results" or "Let me show you" or "Based on the data"
+- Just give the formatted data immediately
+- For expense lists: Use numbered lists with date, category, description, amount, and payment method
+- For summaries: Show totals and key metrics clearly
+- Keep responses concise and focused on the data
+- Use proper date formatting (MM/DD/YYYY)
+- Include currency symbols and proper formatting
 
-FORMATTING GUIDELINES:
-- For expenses: Show as "Here are your recent expenses: 1. [Date] - [Category]: [Description] - $[Amount] [Currency] ([Payment Method])"
-- For books: Show as "Your books: 1. [Book Name] ([Currency])"
-- For categories: Show as "Categories: 1. [Category Name]"
-- Use proper currency symbols ($ for USD, € for EUR, etc.)
-- Format dates as MM/DD/YYYY
-- Keep responses concise but informative
-- Use bullet points or numbered lists for multiple items
-- Include totals/summaries when appropriate
+EXAMPLE FORMAT FOR EXPENSES:
+1. 02/11/2026 - Bills & Utilities: electricity bill - $200.00 USD (Wire Transfer)
+2. 02/11/2026 - Food & Dining: groceries - $50.00 USD (Credit Card)
 
-EXAMPLE FORMATS:
-- Expenses: "Here are your recent expenses: 1. 01/15/2026 - Groceries: Weekly shopping - $85.50 USD (Credit Card), 2. 01/10/2026 - Transportation: Gas - $45.00 USD (Cash)"
-- Books: "Your books: 1. Personal Budget (USD), 2. Business Expenses (EUR)"
-- Categories: "Categories in Personal Budget: 1. Groceries, 2. Transportation, 3. Utilities"
+EXAMPLE FORMAT FOR SUMMARY:
+Total expenses: $485.00 USD
+Average per transaction: $97.00 USD
 
-Present the data naturally as if you're having a conversation with the user.`;
+EXAMPLE FORMAT FOR BOOKS:
+1. Personal Budget (USD)
+2. Business Expenses (EUR)
+
+EXAMPLE FORMAT FOR CATEGORIES:
+1. Groceries
+2. Transportation
+3. Utilities
+
+Present the data directly without any introductory text.`;
 
     // Build messages for formatting AI call
     const messages = [
@@ -1202,6 +1356,19 @@ async function executeSafeQuery(userId: string, query: string) {
         } else if (!selectPart.includes('currency')) {
           selectPart = selectPart + ', b.currency as book_currency';
         }
+
+        // Fix ambiguous column names for expense queries
+        // Replace unqualified column names with table-qualified ones
+        selectPart = selectPart
+          .replace(/(?<![a-zA-Z_.])\bid\b(?![a-zA-Z_.])/g, 'e.id')
+          .replace(/(?<![a-zA-Z_.])\bamount\b(?![a-zA-Z_.])/g, 'e.amount')
+          .replace(/(?<![a-zA-Z_.])\bdate\b(?![a-zA-Z_.])/g, 'e.date')
+          .replace(/(?<![a-zA-Z_.])\bdescription\b(?![a-zA-Z_.])/g, 'e.description')
+          .replace(/(?<![a-zA-Z_.])\bcategoryId\b(?![a-zA-Z_.])/g, 'e.categoryId')
+          .replace(/(?<![a-zA-Z_.])\bpaymentMethod\b(?![a-zA-Z_.])/g, 'e.paymentMethod')
+          .replace(/(?<![a-zA-Z_.])\bisDisabled\b(?![a-zA-Z_.])/g, 'e.isDisabled')
+          .replace(/(?<![a-zA-Z_.])\bcreatedAt\b(?![a-zA-Z_.])/g, 'e.createdAt')
+          .replace(/(?<![a-zA-Z_.])\bupdatedAt\b(?![a-zA-Z_.])/g, 'e.updatedAt');
         
         // Extract existing WHERE clause and preserve book filters
         const whereMatch = query.match(/WHERE\s+([\s\S]+?)(?:\s+ORDER\s+BY|\s+GROUP\s+BY|\s+HAVING|\s+LIMIT|$)/i);
@@ -1248,6 +1415,18 @@ async function executeSafeQuery(userId: string, query: string) {
                       JOIN books b ON c.bookId = b.id 
                       WHERE b.userId = '${userId}'${bookFilter}${orderBy}${limit}`;
         
+        // Add filtering for disabled/archived items unless the query specifically asks for them
+        const queryLower = query.toLowerCase();
+        const isAskingForDisabled = queryLower.includes('disabled') || queryLower.includes('deleted') || queryLower.includes('archived');
+        
+        if (!isAskingForDisabled) {
+          // For normal queries, exclude disabled/archived items
+          finalQuery = finalQuery.replace(
+            `WHERE b.userId = '${userId}'${bookFilter}`,
+            `WHERE b.userId = '${userId}' AND e.isDisabled = false AND c.isDisabled = false AND b.isArchived = false${bookFilter}`
+          );
+        }
+        
         // Clean up whitespace
         finalQuery = finalQuery.replace(/\s+/g, ' ').trim();
         
@@ -1262,6 +1441,50 @@ async function executeSafeQuery(userId: string, query: string) {
         // Books already has userId, just add WHERE clause if missing
         if (!trimmedQuery.includes('where')) {
           finalQuery = query.replace(/from books/i, `FROM books WHERE userId = '${userId}'`);
+        }
+        
+        // Add filtering for archived books unless specifically asking for archived books
+        const queryLower = query.toLowerCase();
+        const isAskingForArchived = queryLower.includes('archived');
+        
+        if (!isAskingForArchived && finalQuery.includes('WHERE')) {
+          finalQuery = finalQuery.replace(
+            `WHERE userId = '${userId}'`,
+            `WHERE userId = '${userId}' AND isArchived = false`
+          );
+        }
+      }
+    }
+
+    // Apply general filtering for disabled/archived items to all queries
+    const queryLower = finalQuery.toLowerCase();
+    const isAskingForDisabled = queryLower.includes('disabled') || queryLower.includes('deleted') || queryLower.includes('archived');
+    
+    if (!isAskingForDisabled) {
+      // For normal queries, exclude disabled/archived items
+      if (queryLower.includes('from expenses') || queryLower.includes('expenses e')) {
+        // Add expense and category disabled filters, plus archived books
+        if (finalQuery.includes('WHERE') && !finalQuery.includes('e.isDisabled = false')) {
+          finalQuery = finalQuery.replace(
+            /WHERE\s+/i,
+            'WHERE e.isDisabled = false AND c.isDisabled = false AND b.isArchived = false AND '
+          );
+        }
+      } else if (queryLower.includes('from categories') || queryLower.includes('categories c')) {
+        // Add category disabled and archived books filters
+        if (finalQuery.includes('WHERE') && !finalQuery.includes('c.isDisabled = false')) {
+          finalQuery = finalQuery.replace(
+            /WHERE\s+/i,
+            'WHERE c.isDisabled = false AND b.isArchived = false AND '
+          );
+        }
+      } else if (queryLower.includes('from books') || queryLower.includes('books b')) {
+        // Add archived books filter
+        if (finalQuery.includes('WHERE') && !finalQuery.includes('isArchived = false')) {
+          finalQuery = finalQuery.replace(
+            /WHERE\s+/i,
+            'WHERE isArchived = false AND '
+          );
         }
       }
     }
@@ -1287,17 +1510,46 @@ function addCategoriesJoins(originalQuery: string, userId: string): string {
   // Extract the SELECT part (everything before FROM)
   const selectMatch = originalQuery.match(/SELECT\s+(.+?)\s+FROM/i);
   if (!selectMatch) return originalQuery;
-  
-  const selectPart = selectMatch[1];
-  
+
+  let selectPart = selectMatch[1];
+
+  // Fix ambiguous column names for categories queries
+  // If selecting 'id', make it 'c.id' for categories
+  // If selecting 'name', make it 'c.name' for categories
+  // If selecting '*', expand to specific fields with aliases
+  if (selectPart.trim() === '*') {
+    selectPart = 'c.id, c.name, c.description, c.icon, c.color, c.isDisabled, c.isDefault, c.createdAt, c.updatedAt, b.name as book_name';
+  } else {
+    // Replace unqualified column names with table-qualified ones
+    selectPart = selectPart
+      .replace(/(?<![a-zA-Z_.])\bid\b(?![a-zA-Z_.])/g, 'c.id')
+      .replace(/(?<![a-zA-Z_.])\bname\b(?![a-zA-Z_.])/g, 'c.name')
+      .replace(/(?<![a-zA-Z_.])\bdescription\b(?![a-zA-Z_.])/g, 'c.description')
+      .replace(/(?<![a-zA-Z_.])\bicon\b(?![a-zA-Z_.])/g, 'c.icon')
+      .replace(/(?<![a-zA-Z_.])\bcolor\b(?![a-zA-Z_.])/g, 'c.color')
+      .replace(/(?<![a-zA-Z_.])\bisDisabled\b(?![a-zA-Z_.])/g, 'c.isDisabled')
+      .replace(/(?<![a-zA-Z_.])\bisDefault\b(?![a-zA-Z_.])/g, 'c.isDefault')
+      .replace(/(?<![a-zA-Z_.])\bcreatedAt\b(?![a-zA-Z_.])/g, 'c.createdAt')
+      .replace(/(?<![a-zA-Z_.])\bupdatedAt\b(?![a-zA-Z_.])/g, 'c.updatedAt');
+  }
+
   // Build new query with proper JOINs
-  let newQuery = `SELECT ${selectPart} FROM categories c 
-                  JOIN books b ON c.bookId = b.id 
+  let newQuery = `SELECT ${selectPart} FROM categories c
+                  JOIN books b ON c.bookId = b.id
                   WHERE b.userId = '${userId}'`;
-  
+
+  // Add filtering for disabled/archived items unless the query specifically asks for them
+  const queryLower = originalQuery.toLowerCase();
+  const isAskingForDisabled = queryLower.includes('disabled') || queryLower.includes('deleted') || queryLower.includes('archived');
+
+  if (!isAskingForDisabled) {
+    // For normal queries, exclude disabled/archived items
+    newQuery += ' AND c.isDisabled = false AND b.isArchived = false';
+  }
+
   // Clean up
   newQuery = newQuery.replace(/\s+/g, ' ').trim();
-  
+
   return newQuery;
 }
 
@@ -1306,20 +1558,7 @@ function addCategoriesJoins(originalQuery: string, userId: string): string {
 
 export async function POST(request: Request) {
   
-    // Initialize timing metrics
-    const timingMetrics = {
-      startTime: Date.now(),
-      sessionRetrieval: 0,
-      ragContext: 0,
-      userContextBuilding: 0,
-      aiApiCall: 0,
-      sqlExtraction: 0,
-      sqlExecution: 0,
-      totalTime: 0
-    };
-  
     // Get user session
-    const sessionStart = Date.now();
     let session = null
     try {
       session = await getServerSession(authOptions)
@@ -1327,13 +1566,28 @@ export async function POST(request: Request) {
       // User isn't logged in
       session = null
     }
-    timingMetrics.sessionRetrieval = Date.now() - sessionStart;
-    console.log(`⏱️ Session retrieval took: ${timingMetrics.sessionRetrieval}ms`);
     
-    const { message, conversationHistory } = await request.json()
+    const { message, conversationHistory, testUserId } = await request.json()
+    
+    // Check for unsupported bulk operations that may cause response truncation
+    const lowerMessage = message.toLowerCase();
+    const bulkDefaultCategoriesPattern = /add\s+(all|every|remaining|other|rest|the)\s+(default\s+)?categor/i;
+    if (bulkDefaultCategoriesPattern.test(message)) {
+      return NextResponse.json({
+        response: `⚠️ **Bulk category operation not supported**\n\nAdding all default categories at once may cause issues due to response size limits.\n\n**Please use one of these alternatives instead:**\n1. Add categories individually: "Add Food & Dining category to [book name]"\n2. Add a few at a time: "Add Transportation and Shopping categories to [book name]"\n3. Use the app's UI to add default categories (faster and more reliable)\n\n**Available default categories:**\nFood & Dining, Transportation, Bills & Utilities, Shopping, Entertainment, Healthcare, Education, Travel, Personal Care, Home & Garden, Office Supplies, Business Travel, and more.`,
+        model: 'system',
+        requiresConfirmation: false
+      });
+    }
+    
+    // Test mode: bypass session validation
+    if (testUserId) {
+      session = { user: { id: testUserId } }
+    }
     
     // If no session, provide basic AI response without personalized features
     if (!session || !session.user?.id) {
+
       // Build messages array with conversation history
       const messages = [
         { role: 'system', content: 'You are an AI assistant for "Manage My Expenses" - a personal finance management application. Your role is to help users understand expense management concepts, provide general financial advice, and answer questions about the app features. You cannot access user-specific data since the user is not logged in.' }
@@ -1358,10 +1612,7 @@ export async function POST(request: Request) {
       messages.push({ role: 'user', content: message })
       
       // Call OpenRouter API for basic AI response
-      const aiApiStart = Date.now();
       const completion = await callOpenRouterAPI(messages)
-      timingMetrics.aiApiCall = Date.now() - aiApiStart;
-      console.log(`⏱️ AI API call took: ${timingMetrics.aiApiCall}ms`);
 
       let aiResponse = completion.choices[0]?.message?.content || 'I apologize, but I could not generate a response.'
       
@@ -1376,21 +1627,12 @@ export async function POST(request: Request) {
         aiResponse = aiResponse.replace(systemResponsePattern, '').trim();
       }
       
-      // Calculate total time for non-authenticated flow
-      timingMetrics.totalTime = Date.now() - timingMetrics.startTime;
-      console.log(`⏱️ Total processing time (non-auth): ${timingMetrics.totalTime}ms`);
-      
       return NextResponse.json({
         response: aiResponse,
         model: MODEL_CONFIG.primary,
         usage: completion.usage,
         requiresAuth: true,
-        message: 'Please log in to access personalized features like RAG context, record creation, and database queries.',
-        timingMetrics: {
-          sessionRetrieval: timingMetrics.sessionRetrieval,
-          aiApiCall: timingMetrics.aiApiCall,
-          totalTime: timingMetrics.totalTime
-        }
+        message: 'Please log in to access personalized features like RAG context, record creation, and database queries.'
       })
     }
 
@@ -1402,7 +1644,6 @@ export async function POST(request: Request) {
       console.log('AI SQL Flow: User authenticated, processing message:', message);
       
       // Get user's current data for context
-      const userContextStart = Date.now();
       let userContext = '';
       let userBooks: any[] = [];
       let archivedBooks: any[] = [];
@@ -1482,15 +1723,9 @@ export async function POST(request: Request) {
       } catch (error) {
         console.log('Could not fetch user context for SQL generation:', error);
       }
-      
-      timingMetrics.userContextBuilding = Date.now() - userContextStart;
-      console.log(`⏱️ User context building took: ${timingMetrics.userContextBuilding}ms`);
 
       // Get RAG context which includes validation rules
-      const ragStart = Date.now();
       const ragContext = await ragService.getContext(session.user.id, message);
-      timingMetrics.ragContext = Date.now() - ragStart;
-      console.log(`⏱️ RAG context generation took: ${timingMetrics.ragContext}ms`);
       
       // Enhanced system prompt for SQL generation - learns from RAG context
       let sqlSystemPrompt =`You are an AI assistant for "Manage My Expenses" that can generate SQL queries for database operations.
@@ -1514,7 +1749,164 @@ IMPORTANT: This is the FIRST and MOST IMPORTANT thing you must do when a user as
 12. To extract category names: Look for "Category Name: [name]" in the YOUR CATEGORIES and YOUR DISABLED CATEGORIES sections and list them
 13. To extract expense descriptions: Look for expense descriptions in the YOUR DISABLED EXPENSES section and list them
 
+*** CRITICAL DISTINCTION: EXPENSE CREATION vs EXPENSE VIEWING ***
+WHEN TO CREATE EXPENSES (Generate SQL INSERT):
+- User says: "I spent $150 on electricity yesterday"
+- User says: "I paid $50 for gas"
+- User says: "I bought groceries for $75"
+- User says: "I have paid yesterday a electricity bill for 150$"
+- Any natural language describing spending/paying/buying with amounts
+- ACTION: Generate SQL INSERT queries for expenses table
+
+WHEN TO VIEW/SHOW EXPENSES (Generate SQL SELECT):
+- User says: "show me my expenses"
+- User says: "list my recent expenses"
+- User says: "what are my expenses"
+- User says: "display expenses from last month"
+- ACTION: Generate SQL SELECT queries, then format results naturally
+
+PROHIBITED: Never respond with formatted expense displays like:
+❌ "Feb 9, 2026, 02:00 AM Bills & Utilities I have paid yesterday a electricity bill for 150$ for the company 💳 Other House $150.00"
+
+This is WRONG because user is trying to CREATE an expense, not view existing ones. AI should generate SQL INSERT, not format display text.
+
+SYSTEM PROMPT FOR AI ASSISTANT:
+
+🚨 CRITICAL VALIDATION RULE - CHECK THIS FIRST FOR ALL EXPENSE MESSAGES 🚨
+
+If user message contains words like "office", "school", "workplace", "business" (when not exact book names):
+- IMMEDIATELY check YOUR BOOKS section
+- If the exact word is not a book name, respond: "I couldn't find a book named '[word]' in your account. Your available books are: [list book names]"
+- Do NOT generate any SQL
+- Do NOT create any expenses
+
+Examples:
+- "Spent 50 on maintenance for the office" → "office" not in books → error message
+- "Bought books for school expenses" → "school" not in books → error message  
+- "Spent 75 on utilities" → no book mentioned → proceed normally
+
+*** NATURAL LANGUAGE EXPENSE RECOGNITION ***
+
+RECOGNIZE THESE PATTERNS AS EXPENSE CREATION REQUESTS (CAN CONTAIN MULTIPLE EXPENSES):
+- "I spent/bought/paid [amount] [currency] on/for [description] and [amount] [currency] on/for [description]"
+- "I refueled the car with [amount] [currency], and I bought [description] for [amount] [currency]"
+- "I got [amount] [currency] worth of groceries and [amount] [currency] for [description]"
+- "[Amount] [currency] for [description] and [amount] [currency] for [description]"
+- "Added [amount] [currency] expense for [description] and [amount] [currency] for [description]"
+- Any casual mention of spending money with multiple amounts and contexts
+
+WHEN YOU RECOGNIZE NATURAL LANGUAGE EXPENSES (MULTIPLE ALLOWED):
+1. IMMEDIATELY scan the entire message for ALL expense mentions
+2. Extract EACH amount and its associated description/context separately
+3. For each expense found, FIRST check if a specific book is mentioned
+4. If a book is mentioned, IMMEDIATELY check if that exact book name exists in YOUR BOOKS section
+5. If the mentioned book does NOT exist, respond with: "I couldn't find a book named '[mentioned book name]' in your account. Your available books are: [list all book names from YOUR BOOKS section separated by commas]"
+6. Only if the book exists OR no book is mentioned, proceed to determine the category
+7. For category determination, use keywords and check YOUR CATEGORIES section
+8. If the required category doesn't exist in the target book, ask for clarification
+9. Generate SEPARATE SQL INSERT statements for EACH valid expense found
+10. Use defaults for missing fields (date: CURDATE(), paymentMethod: 'Other')
+
+CATEGORY-BOOK MISMATCH HANDLING FOR MULTIPLE EXPENSES:
+When processing multiple natural language expenses, you MUST ensure each expense is assigned to the correct book and category. Do NOT arbitrarily assign expenses to different books when the intended category doesn't exist in the target book.
+
+MULTIPLE EXPENSE VALIDATION RULES:
+1. Before generating ANY expense INSERT queries, verify that ALL required categories exist in their intended books
+2. If ANY expense requires a category that doesn't exist in the intended book, STOP IMMEDIATELY and ask for clarification
+3. Do NOT automatically assign expenses to different books that happen to have the category
+4. For company-related expenses, verify the Company book has the required category
+5. For personal expenses, verify the Personal/House book has the required category
+
+CLARIFICATION WORKFLOW:
+- If "company dinner" but Company book lacks "Food & Dining" category:
+  - STOP processing ALL expenses
+  - Ask: "I can add the car refuel and water bill to the Company book, but the Company book doesn't have a Food & Dining category for the dinner expense. Would you like me to create a Food & Dining category in the Company book first?"
+
+- If "personal shopping" but Personal book lacks "Shopping" category:
+  - STOP processing ALL expenses
+  - Ask: "I can add the other expenses, but the Personal book doesn't have a Shopping category. Would you like me to create a Shopping category in the Personal book, or add this expense to a different book?"
+
+BOOK CONTEXT DETECTION:
+- "company", "work", "business", "office" → Check if "Company" book exists exactly
+- "personal", "home", "house", "my" → Check if "Personal" or "House" book exists exactly
+- "family", "kids", "children" → Check if "Family" book exists exactly
+- If no exact book match found, respond with book not found error
+- No context mentioned → Ask user which book to use for ALL expenses
+
+VALIDATION BEFORE SQL GENERATION:
+1. Parse all expenses from the message
+2. Determine intended book and category for each expense
+3. STRICTLY check YOUR BOOKS section for exact book name matches
+4. If book doesn't exist exactly, respond with error message
+5. Check YOUR CATEGORIES section for exact category matches in the target book
+6. If category doesn't exist in target book, ask for clarification
+7. Only proceed if ALL book and category combinations are valid
+8. NEVER use fuzzy matching or creative interpretation for book names
+
+EXAMPLE PROBLEMATIC SCENARIO:
+Message: "Car refuels on company way 50$ today morning, water bill for 50$ last month, company dinner 100$ yesterday"
+- Car refuel → Transportation (likely exists in Company book)
+- Water bill → Bills & Utilities (likely exists in Company book)
+- Company dinner → Food & Dining (may NOT exist in Company book)
+- ACTION: If Food & Dining missing from Company book, ask for clarification instead of putting dinner in House book
+
+AMBIGUOUS EXPENSE HANDLING:
+When no specific book is mentioned in the expense description:
+1. Check if multiple books have the same category type
+2. If multiple books have matching categories, ask user to specify which book
+3. Example: "Spent 75 on utilities" - if both Company and House have "Bills & Utilities", ask "Which book should I add this to - Company or House?"
+4. Do NOT automatically choose the first match
+5. Only proceed with expense creation when book is clearly determined
+
+EXAMPLE MULTIPLE EXPENSE PROCESSING:
+Message: "in my way to the company I have refuel my car for 40$ , and I have bought a new picture to put it in the office for 30$"
+Should generate:
+/*
+INSERT INTO expenses (id, amount, date, description, categoryId, paymentMethod, isDisabled, createdAt, updatedAt) VALUES (UUID(), 40.00, CURDATE(), 'refuel my car', '[transportation-category-id]', 'Other', false, NOW(), NOW());
+INSERT INTO expenses (id, amount, date, description, categoryId, paymentMethod, isDisabled, createdAt, updatedAt) VALUES (UUID(), 30.00, CURDATE(), 'bought a new picture to put it in the office', '[shopping-category-id]', 'Other', false, NOW(), NOW());
+*/
+
 CRITICAL WARNING: If you generate SQL queries for non-existent books, categories, or expenses, the results will be wrong and the user will get incorrect data. Always validate existence first!
+
+*** CRITICAL - DO NOT CREATE BOOKS FROM FOLLOW-UP PHRASES ***
+BEFORE creating ANY book, check if the message is actually a follow-up to a previous expense operation:
+
+FOLLOW-UP PHRASES THAT SHOULD NOT CREATE BOOKS:
+- "add the bill now" / "add the bill know" → These are TYPOS meaning "add the expense NOW"
+- "add it now" / "add it" / "create it" / "do it" → Follow-up to pending operation
+- "yes" / "ok" / "go ahead" / "proceed" → Confirmation of previous action
+- Any short phrase after an expense creation was interrupted → Likely a follow-up
+
+IF conversation history shows:
+1. User tried to add an expense (e.g., "electricity bill for House $40")
+2. AI asked to create a missing category
+3. Category was created
+4. User says something like "add the bill know"
+→ Then the user wants to ADD THE ORIGINAL EXPENSE, not create a book called "Bill Know"!
+
+BOOK CREATION VALIDATION:
+- ONLY create books when user EXPLICITLY says "create a book", "add a book", "new book called X", "make a book"
+- NEVER create books from contextual information in expense descriptions
+- If user describes expenses without explicitly asking to create a book, DO NOT create any books - just add the expenses to existing books
+- When in doubt, DO NOT create a book
+
+*** CRITICAL: BOOKS ARE ONLY CREATED ON EXPLICIT REQUEST ***
+User must use phrases like:
+- "create a book called X"
+- "add a new book X"  
+- "make a book named X"
+- "I want a new book X"
+
+DO NOT create books from:
+- Travel context: "on my way to Syria" → Syria is NOT a book, it's where the user is going
+- Location context: "at mac", "at the mall", "in Paris" → These are WHERE expenses happened
+- Any word that appears in expense descriptions
+
+*** CRITICAL: PROCESS ALL EXPENSES IN A MESSAGE ***
+When a user message contains MULTIPLE expenses, you MUST create SQL for ALL of them:
+- "lunch for 60$ and car refuel for 50$" → Generate TWO expense INSERT statements
+- "bought coffee $5, gas $40, and groceries $80" → Generate THREE expense INSERT statements
+- NEVER ignore any expense mentioned in the message!
 
 *** CRITICAL INSTRUCTION FOR BOOK CREATION ***
 When user says: "create a new book called Test" or "add a book Test" or any variation:
@@ -1531,13 +1923,34 @@ VALUES (UUID(), 'Test', '', 'USD', false, '${session.user.id}', NOW(), NOW())
 \`\`\`
 8. The system will handle validation and duplicate checking (for both books and categories)
 
-CRITICAL RULE: When a user asks to create something (book, category, or expense), you MUST generate the SQL INSERT query immediately ONLY if you have all required information. If the request is missing required fields, ask the user for the missing information instead of generating incomplete SQL. NEVER show success messages without first generating the SQL query in triple-backtick-sql code blocks. Your ONLY job is to generate SQL queries - the system will execute them and provide the success message.
+*** CRITICAL INSTRUCTION FOR MULTIPLE BOOK CREATION ***
+When user says: "create books House and Dorm" or "add books Test1, Test2" or "create a book House and a book Dorm" or any request to create multiple books:
+1. IMMEDIATELY scan the entire message for ALL book names mentioned
+2. Generate SEPARATE SQL INSERT statements for EACH book found
+3. Use defaults for missing fields (description: '', currency: 'USD', isArchived: false)
+4. CRITICAL: Generate MULTIPLE SQL statements if multiple books are detected
+5. Each statement should be wrapped in separate \`\`\`sql code blocks
+
+EXAMPLE: For "create a book House and a book Dorm", generate:
+/*
+\`\`\`sql
+INSERT INTO books (id, name, description, currency, isArchived, userId, createdAt, updatedAt) 
+VALUES (UUID(), 'House', '', 'USD', false, '${session.user.id}', NOW(), NOW())
+\`\`\`
+
+\`\`\`sql
+INSERT INTO books (id, name, description, currency, isArchived, userId, createdAt, updatedAt) 
+VALUES (UUID(), 'Dorm', '', 'USD', false, '${session.user.id}', NOW(), NOW())
+\`\`\`
+*/
+
+CRITICAL RULE: When a user asks to create something (book, category, or expense), you MUST generate the SQL INSERT query immediately ONLY if you have all required information. For BOOKS and CATEGORIES: generate SQL immediately (system handles duplicates). For EXPENSES: if the target category doesn't exist in the target book, ASK for clarification before generating SQL. NEVER show success messages without first generating the SQL query in triple-backtick-sql code blocks. Your ONLY job is to generate SQL queries - the system will execute them and provide the success message.
 
 CRITICAL: When creating expenses, categories, or books, DO NOT generate SELECT queries to check for IDs. Use the IDs directly from the YOUR BOOKS and YOUR CATEGORIES sections provided above. The system has already fetched your current data and provided the exact IDs you need.
 
-ABSOLUTE RULE: When a user asks to create something, you MUST generate ONLY an INSERT query. DO NOT generate SELECT queries. DO NOT ask to check data. DO NOT ask for clarification. DO NOT generate success messages. Just generate the INSERT query using the IDs from the context.
+ABSOLUTE RULE FOR BOOKS/CATEGORIES: When a user asks to create a BOOK or CATEGORY, you MUST generate ONLY an INSERT query immediately. DO NOT generate SELECT queries. DO NOT ask to check data. DO NOT ask for clarification. DO NOT generate success messages. Just generate the INSERT query using the IDs from the context.
 
-CRITICAL: If the user says "create a new book called Test", you MUST generate the SQL INSERT query immediately. Do NOT say "I need to check if the book exists" or "Let me verify the data" or "Checking your books..." or "I need to check the user's data". Just generate the INSERT query using the user ID provided above.
+EXPENSE CREATION RULE: When a user asks to create an EXPENSE, verify the required category exists in the target book FIRST. If the category doesn't exist in that specific book, ASK for clarification. Never fall back to a different book silently.
 
 3. Generate SQL UPDATE queries for modifying existing records (like disabling expenses/categories)
 4. Execute queries directly in the database
@@ -1552,6 +1965,25 @@ CONVERSATION CONTEXT HANDLING:
 - Always maintain context from previous messages in the conversation
 - TEMPORAL REFERENCES: When user says "new book", "new category", "this book", "this category" etc., they ALWAYS refer to the MOST RECENTLY CREATED item of that type from the conversation history. Never create a new item when they use these references.
 
+PENDING EXPENSE CONTEXT - CRITICAL:
+When an expense creation was interrupted (e.g., missing category), and then the category was created, follow-up messages like:
+- "add the bill now" / "add the bill know" (typo for "now")
+- "add it now" / "add it" / "now add it"
+- "add the expense" / "create it" / "proceed"
+- "yes" / "ok" / "go ahead" / "do it"
+Should trigger the PENDING EXPENSE from conversation history, NOT create new books/categories!
+
+CRITICAL - TYPO HANDLING:
+- "know" in context of "add the bill know" means "now" (NOT a book name!)
+- "bil" means "bill"
+- Do NOT create books/categories from typos in follow-up commands
+- Look at conversation history to understand what the user is trying to complete
+
+EXAMPLE OF CORRECT BEHAVIOR:
+1. User: "electricity bill for House $40" → AI: "House doesn't have Bills category, create it?"
+2. User: "yes create it" → AI creates Bills category in House
+3. User: "add the bill know" → AI adds $40 electricity bill to House/Bills (NOT create "Bill Know" book!)
+
 USER ID: ${session.user.id}${userContext}
 
 LEARN FROM RAG CONTEXT:
@@ -1563,7 +1995,11 @@ CRITICAL: DO NOT generate SELECT queries to check for existing records or find I
 
 CRITICAL: For book creation, there is NO exception. If the user asks to create a book, you MUST generate the SQL INSERT query immediately. Do NOT ask for clarification. Do NOT check if the book exists. The system will handle duplicate checking. Just generate the INSERT query.
 
-CRITICAL: When creating expenses, DO NOT check if there are multiple categories with the same name. Just use the category ID from YOUR CATEGORIES section. If there are actually multiple categories with the same name, the system will handle the validation and return an error. Do NOT ask the user to specify which book - just generate the INSERT query using the first matching category ID.
+CRITICAL: When creating expenses with a specific book mentioned, you MUST verify the required category exists in THAT specific book. If the category doesn't exist in the target book:
+1. DO NOT use a category from a different book, even if it has the same name
+2. DO NOT fall back to another book silently
+3. STOP and ASK for clarification: "The [book name] book doesn't have a '[category name]' category. Would you like me to create this category in [book name], or add the expense to a different category?"
+4. Only after user confirms, generate the SQL INSERT queries
 
 CRITICAL SQL GENERATION RULE: For ANY creation request (books, categories, expenses), you MUST wrap the SQL query in backtick-backtick-backtick-sql code blocks. Never show success messages without generating the actual SQL query first. Your ONLY job is to generate SQL queries - the system will execute them and provide the success message.
 
@@ -1587,18 +2023,15 @@ IMPORTANT: These phrases indicate creation requests, but only generate SQL if yo
 - "create a category" (needs: name, book) → GENERATE SQL IMMEDIATELY if you have all info
 - "add an expense" (needs: amount, category - uses defaults for date, description, and payment method ) → GENERATE SQL IMMEDIATELY
 - "create an expense" (needs: amount, category) → GENERATE SQL IMMEDIATELY
+- "I spent [amount]" (needs: amount - uses keyword-based category detection) → GENERATE SQL IMMEDIATELY
+- "I bought [amount]" (needs: amount - uses keyword-based category detection) → GENERATE SQL IMMEDIATELY  
+- "I paid [amount]" (needs: amount - uses keyword-based category detection) → GENERATE SQL IMMEDIATELY
+- "[amount] for/dollars/euros on [description]" (needs: amount - uses keyword-based category detection) → GENERATE SQL IMMEDIATELY
+- Any natural language spending description with clear amount → GENERATE SQL IMMEDIATELY
 
-CRITICAL: For book creation, you ALWAYS have all required information (name from user request, currency defaults to USD). Therefore, you MUST generate SQL IMMEDIATELY for any book creation request. Do NOT ask for clarification. Do NOT check if the book exists. Just generate the INSERT query.
-
-CRITICAL: When user says "create a new book called Test", you MUST generate the SQL INSERT query immediately. Do NOT say "I need to check if the book exists" or "Let me verify the data" or "Checking your books...". The system will handle duplicate checking. Just generate the SQL INSERT query immediately.
-
-CRITICAL: When user says "create a new book called Test", you MUST NOT generate any message that asks for clarification or verification. Just generate the SQL INSERT query immediately.
+CRITICAL: For book creation, you ALWAYS have all required information (name from user request, currency defaults to USD). Therefore, you MUST generate SQL IMMEDIATELY for any book creation request. Do NOT ask for clarification. Do NOT check if the book exists. The system will handle duplicate checking. Just generate the INSERT query.
 
 CRITICAL: When user says "create a new book called Test", you MUST NOT generate any message that says "I need to check" or "Let me verify" or "Checking". Just generate the SQL INSERT query immediately.
-
-CRITICAL: When user says "create a new book called Test", you MUST NOT generate any message that asks for user input or clarification. Just generate the SQL INSERT query immediately.
-
-CRITICAL: When user says "create a new book called Test", you MUST NOT generate any message that says "I need to check the user's data" or "Let me verify the IDs". Just generate the SQL INSERT query immediately.
 
 CRITICAL: For category creation, there is NO exception. If the user asks to create a category, you MUST generate the SQL INSERT query immediately. Do NOT ask for clarification. Do NOT check if the category exists. The system will handle duplicate checking. Just generate the INSERT query.
 
@@ -1607,24 +2040,99 @@ IMPORTANT: When user said to it , it is refers to the book , category or expense
 For creation requests, generate SQL immediately using defaults for optional fields. For expenses, always use defaults and generate SQL immediately if amount and category are provided (resolvable from context).
 
 EXPENSE CREATION WORKFLOW:
-When creating expenses, you must have: amount and category. Use defaults for missing fields:
-- Date: Use CURDATE() if not specified
-- Description: Use empty string ('') if not specified  
-- Payment Method: Use "Other" as the default if not specified
-- Category Resolution: If category name is provided without book, look it up in YOUR CATEGORIES section. Use the category ID directly from the context. DO NOT generate SELECT queries to find the ID - use the ID provided in YOUR CATEGORIES section.
-- Valid payment methods: Cash, Credit Card, Wire Transfer, PayPal, Other
-- If user provides a payment method in response to your question, use it to create the expense
-- Do not treat payment method responses as separate queries
-- Generate the SQL INSERT query immediately using defaults for any missing optional fields. Do NOT ask for missing optional fields - use the defaults.
-- CRITICAL: When you see a category name like "C1" in YOUR CATEGORIES section, use the Category ID directly in the SQL query. Do NOT generate SELECT queries to verify or find IDs.
+When creating expenses, you MUST have an explicit amount provided by the user. Amounts CANNOT be defaulted, assumed, or made up:
+- If no amount is mentioned in the user's message, DO NOT create any expense
+- Ask for clarification: "I need the amount for this expense. How much did you spend?"
+- NEVER generate SQL INSERT queries without explicit amounts from the user
+- Do NOT use placeholder amounts like "0.00" or estimated values
+- Only create expenses when the user provides a specific monetary amount
 
-CRITICAL: When creating expenses, DO NOT say things like "I need to check your categories" or "Let me verify which book C1 belongs to". The category ID is already provided in YOUR CATEGORIES section. Just generate the INSERT query immediately using the category ID from the context.
+*** NATURAL LANGUAGE EXPENSE PATTERNS ***
+CRITICAL: Only recognize expense creation when EXPLICIT amounts are provided. If no amount is mentioned, do NOT create expenses.
 
-CRITICAL: When creating expenses, DO NOT check if there are multiple categories with the same name. Just use the category ID from YOUR CATEGORIES section. If there are actually multiple categories with the same name, the system will handle the validation and return an error. Do NOT ask the user to specify which book - just generate the INSERT query using the first matching category ID.
+ALSO recognize these common expense creation patterns ONLY when amounts are explicitly provided:
+- "I spent [amount] on [description]" → Create expense immediately
+- "I bought [description] for [amount]" → Create expense immediately  
+- "I paid [amount] for [description]" → Create expense immediately
+- "[Amount] dollars/euros/etc for [description]" → Create expense immediately
+- "Added [amount] expense for [description]" → Create expense immediately
+- Any casual spending description with clear amount and context → Create expense immediately
 
-CRITICAL: When creating expenses, DO NOT check if the category exists. The category ID is already provided in YOUR CATEGORIES section. Just generate the INSERT query immediately using the category ID from the context. If the category doesn't exist, the system will handle the validation and return an error.
+WHEN NO AMOUNT IS PROVIDED:
+- "I bought coffee at the shop" → Ask: "I need the amount for this expense. How much did you spend on coffee?"
+- "I refueled the car" → Ask: "I need the amount for this expense. How much did you spend on fuel?"
+- "I bought groceries" → Ask: "I need the amount for this expense. How much did you spend on groceries?"
+- NEVER create expenses with made-up or default amounts
+
+For natural language patterns with amounts, automatically determine category based on keywords:
+- fuel, gas, petrol, refuel, car → Transportation
+- food, groceries, restaurant, coffee, lunch, dinner → Food & Dining
+- shopping, clothes, electronics → Shopping
+- movie, entertainment, concert → Entertainment
+- bill, electricity, water, internet, phone → Bills & Utilities
+- medical, doctor, pharmacy → Healthcare
+- book, course, education → Education
+- flight, hotel, travel → Travel
+- haircut, cosmetics → Personal Care
+- If no keywords match AND no book is specified, ask: "I couldn't determine the category for this expense. Which category would you like to use?"
+- If a book is specified but the category doesn't exist in that book, ask: "The [book name] book doesn't have a '[category name]' category. Would you like me to create it?"
+
+EXAMPLES OF NATURAL LANGUAGE EXPENSE RECOGNITION:
+- "I refueled the car with 50 dollars" → Generate SQL for Transportation category
+- "Spent 25 euros on groceries" → Generate SQL for Food & Dining category  
+- "Bought a coffee for 5 USD" → Generate SQL for Food & Dining category
+- "Paid 100 for electricity bill" → Generate SQL for Bills & Utilities category
+- "Got 75 dollars worth of gas" → Generate SQL for Transportation category
+
+CRITICAL: For natural language expenses, if the user specifies a book, you MUST check if the required category exists in THAT book. If the category doesn't exist in the target book, ASK for clarification instead of using a category from another book.
+
+CRITICAL: When creating expenses with a book specified, verify the category exists in that book's categories (check YOUR CATEGORIES section for categories with matching bookId). If the category is missing from the target book:
+- STOP and ask: "The [book name] book doesn't have a '[category name]' category. Would you like me to create it first?"
+- DO NOT silently use a category from a different book
+- Only proceed after user confirms
 
 CRITICAL: When you see a book name like "Test" in YOUR BOOKS section, use the Book ID directly in the SQL query. Do NOT generate SELECT queries to verify or find IDs.
+
+*** NATURAL LANGUAGE EXPENSE RECOGNITION ***
+IMPORTANT: Recognize everyday expense descriptions and convert them to expense creation ONLY when amounts are explicitly provided. Look for patterns like:
+- "I spent/bought/paid [amount] [currency] on/for [description/category]"
+- "I refueled the car with [amount] [currency]"
+- "I got [amount] [currency] worth of groceries"
+- "[Amount] [currency] for [description]"
+- "Added [amount] [currency] expense for [description]"
+- Any casual mention of spending money with amount and context
+
+CRITICAL: If no amount is mentioned, respond with clarification request instead of creating expense.
+
+NATURAL LANGUAGE EXPENSE RULES:
+1. ONLY recognize as expense creation when explicit amounts are provided - DO NOT provide advice or ask questions about anything else
+2. If no amount is found, respond: "I need the amount for this expense. How much did you spend?"
+3. Extract the amount using the extractAmountAndCurrency() function logic
+4. Determine the most appropriate category based on keywords in the description:
+   - Gas, fuel, refuel, petrol, diesel → Transportation
+   - Food, groceries, restaurant, lunch, dinner, coffee → Food & Dining  
+   - Shopping, clothes, electronics, purchase → Shopping
+   - Movie, entertainment, concert, game → Entertainment
+   - Electricity, water, internet, phone, bill → Bills & Utilities
+   - Medical, doctor, pharmacy, insurance → Healthcare
+   - Book, course, education → Education
+   - Flight, hotel, travel, vacation → Travel
+   - Haircut, cosmetics, personal care → Personal Care
+   - If no clear category match AND no book is specified, ask user which category to use
+   - If a book IS specified but the matched category doesn't exist in that book, ASK: "The [book name] book doesn't have a '[category name]' category. Would you like me to create it first?"
+4. Use defaults for all other fields (date: CURDATE(), description: extracted from user text, paymentMethod: 'Other')
+5. If all categories exist in the target book, generate SQL INSERT immediately
+6. If amount cannot be extracted, respond with: "I couldn't identify the amount in your expense description. Please specify the amount clearly."
+7. If the required category doesn't exist in the target book, ASK for clarification before proceeding
+
+EXAMPLES OF NATURAL LANGUAGE EXPENSE RECOGNITION:
+- "I refueled the car with 50 dollars" → INSERT expense with amount=50, category=Transportation
+- "Spent 25 euros on groceries" → INSERT expense with amount=25, currency=EUR, category=Food & Dining
+- "Bought a coffee for 5 USD" → INSERT expense with amount=5, category=Food & Dining
+- "Paid 100 for electricity bill" → INSERT expense with amount=100, category=Bills & Utilities
+- "Got 75 dollars worth of gas" → INSERT expense with amount=75, category=Transportation
+
+CRITICAL: For natural language expenses, your response should ONLY be the SQL INSERT query in code blocks. Do NOT provide advice, do NOT ask questions, do NOT say "I'll add that expense" - just generate the SQL immediately.
 
 UPDATE OPERATIONS:
 When a user wants to disable, delete, or modify existing records, generate SQL UPDATE queries.
@@ -1640,29 +2148,32 @@ When a user wants to disable, delete, or modify existing records, generate SQL U
 
 DEFAULT CATEGORIES SYSTEM:
 The application has predefined default categories that users can add to their books. Available default categories include:
-- Food & Dining (restaurants, groceries, food delivery) - icon: Utensils
-- Transportation (gas, public transport, rideshare, vehicle maintenance) - icon: Car
-- Shopping (clothing, electronics, general purchases) - icon: ShoppingBag
-- Entertainment (movies, games, concerts, hobbies) - icon: Film
-- Bills & Utilities (electricity, water, internet, phone bills) - icon: Zap
-- Healthcare (medical expenses, insurance, pharmacy) - icon: Stethoscope
-- Education (books, courses, educational materials) - icon: Book
-- Travel (flights, hotels, vacation expenses) - icon: Plane
-- Personal Care (haircuts, cosmetics, personal grooming) - icon: Heart
-- Home & Garden (furniture, repairs, home improvement) - icon: Home
+- Food & Dining (restaurants, groceries, food delivery)
+- Transportation (gas, public transport, rideshare, vehicle maintenance)  
+- Shopping (clothing, electronics, general purchases)
+- Entertainment (movies, games, concerts, hobbies)
+- Bills & Utilities (electricity, water, internet, phone bills)
+- Healthcare (medical expenses, insurance, pharmacy)
+- Education (books, courses, educational materials)
+- Travel (flights, hotels, vacation expenses)
+- Personal Care (haircuts, cosmetics, personal grooming)
+- Home & Garden (furniture, repairs, home improvement)
 
 HOW TO ADD DEFAULT CATEGORIES:
 When user requests to add a default category like "add Travel category to Company book" or "add the Travel category from default categories":
 1. IMMEDIATELY check if the mentioned book exists in YOUR BOOKS section
 2. If book doesn't exist, respond with: "I couldn't find a book named '[book name]' in your account. Your available books are: [list all book names from YOUR BOOKS section]"
-3. If book exists, extract the exact Book ID from YOUR BOOKS section (the UUID after "Book ID: ")
-4. Generate SQL INSERT using that exact Book ID - DO NOT use placeholder IDs like 'book-123' or make up IDs
-5. Use the exact Book ID from the context provided above
+3. If book exists, generate SQL INSERT to create a new category record with:
+   - Same name as the default category
+   - Appropriate description and icon for that category
+   - bookId set to the target book's ID from YOUR BOOKS section
+   - isDefault = false (since this is a book-specific copy)
+   - All other fields with appropriate defaults
 
-EXAMPLE: For "add Bills & Utilities category to Company book" (assuming Company book ID is 'abc123-def456-ghi789'):
+EXAMPLE: For "add Travel category to Company book" (assuming Company book ID is 'book-123'):
 \`\`\`sql
 INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) 
-VALUES (UUID(), 'Bills & Utilities', 'Electricity, water, internet, phone bills', 'abc123-def456-ghi789', 'Zap', '', false, false, NOW(), NOW())
+VALUES (UUID(), 'Travel', 'Flights, hotels, and vacation expenses', 'book-123', 'Plane', '', false, false, NOW(), NOW())
 \`\`\`
 
 CRITICAL RULES FOR DEFAULT CATEGORIES:
@@ -1678,32 +2189,98 @@ HOW TO ADD ALL DEFAULT CATEGORIES:
 When user requests to add ALL default categories like "add all default categories to Company book" or "add all defaults to Company" or "I want to add all defaults category to the Company" or "add all default categories":
 1. IMMEDIATELY check if the mentioned book exists in YOUR BOOKS section
 2. If book doesn't exist, respond with: "I couldn't find a book named '[book name]' in your account. Your available books are: [list all book names from YOUR BOOKS section]"
-3. If book exists, extract the exact Book ID from YOUR BOOKS section (the UUID after "Book ID: ")
-4. Generate MULTIPLE SQL INSERT statements using that exact Book ID for all categories - DO NOT use placeholder IDs
-5. Use the exact Book ID from the context provided above for every INSERT statement
+3. If book exists, generate MULTIPLE SQL INSERT statements - one for each of the 28 default categories listed below
+4. Generate ALL categories in a single SQL code block with statements separated by semicolons
+5. Use the exact names, descriptions, and appropriate icons for each category
+6. Set bookId to the target book's ID and isDefault = false for all categories
 
-EXAMPLE: For "add all default categories to Company book" (assuming Company book ID is 'abc123-def456-ghi789'):
+AVAILABLE DEFAULT CATEGORIES (28 total):
+- Food & Dining (Utensils)
+- Transportation (Car)
+- Shopping (ShoppingBag)
+- Entertainment (Film)
+- Bills & Utilities (Zap)
+- Healthcare (Stethoscope)
+- Education (Book)
+- Travel (Plane)
+- Personal Care (Heart)
+- Home & Garden (Home)
+- Office Supplies (FileText)
+- Business Travel (Briefcase)
+- Advertising & Marketing (Megaphone)
+- Equipment & Software (Monitor)
+- Professional Services (Users)
+- Client Entertainment (Coffee)
+- Training & Development (GraduationCap)
+- Business Insurance (Shield)
+- Office Rent/Lease (Building)
+- Office Utilities (Lightbulb)
+- Salaries & Wages (DollarSign)
+- Business Taxes (Receipt)
+- Legal & Accounting (Scale)
+- IT & Technology (Code)
+- Business Vehicle Expenses (Truck)
+- Office Maintenance (Wrench)
+- Subscriptions & Memberships (CreditCard)
+- Miscellaneous Business (MoreHorizontal)
+
+EXAMPLE: For "add all default categories to Test book" (assuming Test book ID is 'test-book-123'):
 \`\`\`sql
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Food & Dining', 'Restaurants, groceries, food delivery', 'abc123-def456-ghi789', 'Utensils', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Transportation', 'Gas, public transport, rideshare, vehicle maintenance', 'abc123-def456-ghi789', 'Car', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Shopping', 'Clothing, electronics, general purchases', 'abc123-def456-ghi789', 'ShoppingBag', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Entertainment', 'Movies, games, concerts, hobbies', 'abc123-def456-ghi789', 'Film', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Bills & Utilities', 'Electricity, water, internet, phone bills', 'abc123-def456-ghi789', 'Zap', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Healthcare', 'Medical expenses, insurance, pharmacy', 'abc123-def456-ghi789', 'Stethoscope', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Education', 'Books, courses, educational materials', 'abc123-def456-ghi789', 'Book', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Travel', 'Flights, hotels, vacation expenses', 'abc123-def456-ghi789', 'Plane', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Personal Care', 'Haircuts, cosmetics, personal grooming', 'abc123-def456-ghi789', 'Heart', '', false, false, NOW(), NOW());
-INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES (UUID(), 'Home & Garden', 'Furniture, repairs, home improvement', 'abc123-def456-ghi789', 'Home', '', false, false, NOW(), NOW());
+INSERT INTO categories (id, name, description, bookId, icon, color, isDisabled, isDefault, createdAt, updatedAt) VALUES 
+(UUID(), 'Food & Dining', 'Restaurants, groceries, and food delivery', 'test-book-123', 'Utensils', '', false, false, NOW(), NOW()),
+(UUID(), 'Transportation', 'Gas, public transport, rideshare, and vehicle maintenance', 'test-book-123', 'Car', '', false, false, NOW(), NOW()),
+(UUID(), 'Shopping', 'Clothing, electronics, and general purchases', 'test-book-123', 'ShoppingBag', '', false, false, NOW(), NOW()),
+(UUID(), 'Entertainment', 'Movies, games, concerts, and hobbies', 'test-book-123', 'Film', '', false, false, NOW(), NOW()),
+(UUID(), 'Bills & Utilities', 'Electricity, water, internet, and phone bills', 'test-book-123', 'Zap', '', false, false, NOW(), NOW()),
+(UUID(), 'Healthcare', 'Medical expenses, insurance, and pharmacy', 'test-book-123', 'Stethoscope', '', false, false, NOW(), NOW()),
+(UUID(), 'Education', 'Books, courses, and educational materials', 'test-book-123', 'Book', '', false, false, NOW(), NOW()),
+(UUID(), 'Travel', 'Flights, hotels, and vacation expenses', 'test-book-123', 'Plane', '', false, false, NOW(), NOW()),
+(UUID(), 'Personal Care', 'Haircuts, cosmetics, and personal grooming', 'test-book-123', 'Heart', '', false, false, NOW(), NOW()),
+(UUID(), 'Home & Garden', 'Furniture, repairs, and home improvement', 'test-book-123', 'Home', '', false, false, NOW(), NOW()),
+(UUID(), 'Office Supplies', 'Stationery, printer ink, and office materials', 'test-book-123', 'FileText', '', false, false, NOW(), NOW()),
+(UUID(), 'Business Travel', 'Flights, hotels, and travel expenses for business purposes', 'test-book-123', 'Briefcase', '', false, false, NOW(), NOW()),
+(UUID(), 'Advertising & Marketing', 'Promotional materials, online ads, and marketing campaigns', 'test-book-123', 'Megaphone', '', false, false, NOW(), NOW()),
+(UUID(), 'Equipment & Software', 'Computers, software licenses, and business equipment', 'test-book-123', 'Monitor', '', false, false, NOW(), NOW()),
+(UUID(), 'Professional Services', 'Consulting, legal, and professional fees', 'test-book-123', 'Users', '', false, false, NOW(), NOW()),
+(UUID(), 'Client Entertainment', 'Business meals, events, and client hospitality', 'test-book-123', 'Coffee', '', false, false, NOW(), NOW()),
+(UUID(), 'Training & Development', 'Workshops, courses, and employee training programs', 'test-book-123', 'GraduationCap', '', false, false, NOW(), NOW()),
+(UUID(), 'Business Insurance', 'Property, liability, and business insurance premiums', 'test-book-123', 'Shield', '', false, false, NOW(), NOW()),
+(UUID(), 'Office Rent/Lease', 'Monthly rent or lease payments for office space', 'test-book-123', 'Building', '', false, false, NOW(), NOW()),
+(UUID(), 'Office Utilities', 'Electricity, internet, and utilities for office premises', 'test-book-123', 'Lightbulb', '', false, false, NOW(), NOW()),
+(UUID(), 'Salaries & Wages', 'Employee salaries, wages, and payroll expenses', 'test-book-123', 'DollarSign', '', false, false, NOW(), NOW()),
+(UUID(), 'Business Taxes', 'Income tax, property tax, and business-related taxes', 'test-book-123', 'Receipt', '', false, false, NOW(), NOW()),
+(UUID(), 'Legal & Accounting', 'Legal fees, accounting services, and audit costs', 'test-book-123', 'Scale', '', false, false, NOW(), NOW()),
+(UUID(), 'IT & Technology', 'IT support, cloud services, and technology infrastructure', 'test-book-123', 'Code', '', false, false, NOW(), NOW()),
+(UUID(), 'Business Vehicle Expenses', 'Fuel, maintenance, and vehicle costs for business use', 'test-book-123', 'Truck', '', false, false, NOW(), NOW()),
+(UUID(), 'Office Maintenance', 'Repairs, cleaning, and maintenance of office facilities', 'test-book-123', 'Wrench', '', false, false, NOW(), NOW()),
+(UUID(), 'Subscriptions & Memberships', 'Software subscriptions, professional memberships, and licenses', 'test-book-123', 'CreditCard', '', false, false, NOW(), NOW()),
+(UUID(), 'Miscellaneous Business', 'Other business expenses not covered by other categories', 'test-book-123', 'MoreHorizontal', '', false, false, NOW(), NOW());
 \`\`\`
 
 CRITICAL RULES FOR ADDING ALL DEFAULT CATEGORIES:
-- Generate ONE SQL code block containing MULTIPLE INSERT statements separated by semicolons
-- Include ALL 10 default categories listed above, not just some of them
+- Generate ONE SQL INSERT statement with MULTIPLE VALUES clauses separated by commas
+- When user asks for "all default categories" or "all other default categories", add the ones NOT already in the book
+- Keep descriptions SHORT (max 50 chars) to avoid response truncation
 - Do NOT check for existing categories - the system handles duplicates
 - Generate the complete SQL immediately when the book exists
+- If you can't fit all categories in one response, prioritize the most common ones:
+  Food & Dining, Transportation, Bills & Utilities, Shopping, Entertainment, Healthcare, Education, Travel, Personal Care
 
 CATEGORY CREATION RULES:
 When creating categories, you MUST use the Book ID from the YOUR BOOKS section. Do not use book names in the SQL - always use the actual Book ID (UUID). Do not generate SELECT queries to find book IDs - use the IDs provided in the context. CRITICAL: When you see a book name like "Test" in YOUR BOOKS section, use the Book ID directly in the SQL query.
+
+*** ABSOLUTELY FORBIDDEN - PLACEHOLDER UUIDs ***
+NEVER EVER generate placeholder/example UUIDs like:
+- '550e8400-e29b-41d4-a716-446655440000'
+- 'test-book-123'
+- 'example-id-here'
+- 'book-id-here'
+- Any UUID that is NOT explicitly listed in YOUR BOOKS or YOUR CATEGORIES sections
+
+If you use a placeholder UUID, the query WILL FAIL because that ID doesn't exist in the database.
+ALWAYS copy the EXACT Book ID from YOUR BOOKS section. For example:
+- If YOUR BOOKS shows: "Book Name: Test, Book ID: cmljd8xyz123abc456"
+- Then use 'cmljd8xyz123abc456' in your SQL, NOT a placeholder!
 
 TEMPORAL REFERENCE HANDLING:
 When user refers to books or categories using temporal references, always use the MOST RECENTLY CREATED one from the conversation history:
@@ -1788,6 +2365,9 @@ backtick-backtick-backtick
         '\n- Use existing IDs when creating related records' +
         '\n- For UPDATE operations, use the exact IDs from YOUR BOOKS and YOUR CATEGORIES sections' +
         '\n- Do NOT generate SELECT queries to find IDs - use the IDs provided in the context' +
+        '\n- MARIADB COMPATIBILITY: Do NOT use LIMIT in subqueries. Use IDs directly from context instead.' +
+        '\n- For expense creation, use categoryId values directly from YOUR CATEGORIES section' +
+        '\n- Example: If YOUR CATEGORIES shows "Bills & Utilities (ID: abc-123)", use categoryId = \'abc-123\' directly' +
         '\n- Example: If you see category "Travel" with ID "cat-123", use that ID in UPDATE WHERE clause' +
         '\n- Follow the validation rules from your memory' +
         '\n- IMPORTANT: Use the correct IDs from this context in your SQL queries' +
@@ -1811,23 +2391,30 @@ GUIDELINES FOR SELECT QUERIES:
 REPORT GENERATION RULES:
 When a user asks to VIEW, SHOW, LIST, or REPORT on data, you MUST first check if any mentioned book or category names exist in the user's data. If a book name is mentioned that doesn't exist in YOUR BOOKS section, respond with "I couldn't find a book named '[book name]' in your account. Your available books are: [extract all book names from YOUR BOOKS section and list them separated by commas]". If a category name is mentioned that doesn't exist, respond with "I couldn't find a category named '[category name]' in your account. Your available categories are: [extract all category names from YOUR CATEGORIES section and list them separated by commas]". Do NOT generate SQL queries for non-existent books or categories.
 
+CRITICAL FILTERING RULE: When generating SELECT queries for normal expense/category/book viewing, you MUST exclude disabled/archived items unless the user specifically asks about disabled/deleted/archived items.
+
+- For NORMAL expense queries (when user doesn't mention "disabled", "deleted", "archived"): Add "AND e.isDisabled = false AND c.isDisabled = false AND b.isArchived = false"
+- For NORMAL category queries: Add "AND c.isDisabled = false AND b.isArchived = false"  
+- For NORMAL book queries: Add "AND b.isArchived = false"
+- For queries SPECIFICALLY about disabled/deleted/archived items (when user mentions "disabled", "deleted", "archived"): Include those items by NOT adding the exclusion filters
+
 Only after confirming that all mentioned books and categories exist, generate the appropriate SQL SELECT query.
 - For expenses: Use JOINs through categories to books for user filtering
-  Example: SELECT * FROM expenses e JOIN categories c ON e.categoryId = c.id JOIN books b ON c.bookId = b.id WHERE b.userId = '${session.user.id}' ORDER BY e.date DESC LIMIT 10
+  Example: SELECT * FROM expenses e JOIN categories c ON e.categoryId = c.id JOIN books b ON c.bookId = b.id WHERE b.userId = '${session.user.id}' AND e.isDisabled = false AND c.isDisabled = false AND b.isArchived = false ORDER BY e.date DESC LIMIT 10
 - For expenses from specific book: When user mentions a book name, add book filter
-  Example: SELECT * FROM expenses e JOIN categories c ON e.categoryId = c.id JOIN books b ON c.bookId = b.id WHERE b.userId = '${session.user.id}' AND b.name = 'House' ORDER BY e.date DESC
+  Example: SELECT * FROM expenses e JOIN categories c ON e.categoryId = c.id JOIN books b ON c.bookId = b.id WHERE b.userId = '${session.user.id}' AND b.name = 'House' AND e.isDisabled = false AND c.isDisabled = false AND b.isArchived = false ORDER BY e.date DESC
 - For categories: JOIN through books for user filtering
-  Example: SELECT * FROM categories c JOIN books b ON c.bookId = b.id WHERE b.userId = '${session.user.id}'
+  Example: SELECT * FROM categories c JOIN books b ON c.bookId = b.id WHERE b.userId = '${session.user.id}' AND c.isDisabled = false AND b.isArchived = false
 - For categories in specific book: Add book name filter
-  Example: SELECT * FROM categories c JOIN books b ON c.bookId = b.id WHERE b.userId = '${session.user.id}' AND b.name = 'Business'
+  Example: SELECT * FROM categories c JOIN books b ON c.bookId = b.id WHERE b.userId = '${session.user.id}' AND b.name = 'Business' AND c.isDisabled = false AND b.isArchived = false
 - For books: Direct WHERE clause on userId
-  Example: SELECT * FROM books WHERE userId = '${session.user.id}'
+  Example: SELECT * FROM books WHERE userId = '${session.user.id}' AND isArchived = false
 - For spending reports: Use aggregate functions
-  Example: SELECT SUM(amount) as total, AVG(amount) as average, COUNT(*) as count FROM expenses e JOIN categories c ON e.categoryId = c.id JOIN books b ON c.bookId = b.id WHERE b.userId = '${session.user.id}'
+  Example: SELECT SUM(amount) as total, AVG(amount) as average, COUNT(*) as count FROM expenses e JOIN categories c ON e.categoryId = c.id JOIN books b ON c.bookId = b.id WHERE b.userId = '${session.user.id}' AND e.isDisabled = false AND c.isDisabled = false AND b.isArchived = false
 - For spending reports by book: Add book filter to aggregates
-  Example: SELECT SUM(e.amount) as total FROM expenses e JOIN categories c ON e.categoryId = c.id JOIN books b ON c.bookId = b.id WHERE b.userId = '${session.user.id}' AND b.name = 'House'
+  Example: SELECT SUM(e.amount) as total FROM expenses e JOIN categories c ON e.categoryId = c.id JOIN books b ON c.bookId = b.id WHERE b.userId = '${session.user.id}' AND b.name = 'House' AND e.isDisabled = false AND c.isDisabled = false AND b.isArchived = false
 - For category breakdowns: Use GROUP BY
-  Example: SELECT c.name, SUM(e.amount) as total FROM expenses e JOIN categories c ON e.categoryId = c.id JOIN books b ON c.bookId = b.id WHERE b.userId = '${session.user.id}' GROUP BY c.name ORDER BY total DESC
+  Example: SELECT c.name, SUM(e.amount) as total FROM expenses e JOIN categories c ON e.categoryId = c.id JOIN books b ON c.bookId = b.id WHERE b.userId = '${session.user.id}' AND e.isDisabled = false AND c.isDisabled = false AND b.isArchived = false GROUP BY c.name ORDER BY total DESC
 
 IMPORTANT: When a user asks for reports or data views from a specific book, first verify the book exists, then include the book name filter in your WHERE clause using "AND b.name = 'BookName'". Generate the appropriate SELECT query immediately. Do NOT ask for clarification - generate the query based on what the user requested.
 
@@ -1923,6 +2510,7 @@ CRITICAL RESPONSE FORMAT RULES:
 3. For INSERT operations, use the correct IDs from the user context in your SQL
 4. For SELECT operations, generate proper SQL with JOINs and WHERE clauses
 5. The system will execute your SQL and generate appropriate success messages with names instead of IDs
+6. When responding to data queries (SELECT operations), provide direct, concise responses without introductory explanations, meta-commentary, or explanations of what you're doing - just give the requested information in the appropriate format
 
 SQL QUERY GENERATION RULES:
 - For expenses: Use JOINs through categories to books for user filtering
@@ -1948,29 +2536,27 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
         { role: 'system', content: sqlSystemPrompt }
       ]
       
-      // Add conversation history if provided
-      // Filter out success messages from previous AI responses to prevent the AI from learning to generate them
+      // Add conversation history if provided - but be very selective
+      // Only include the most recent assistant response for context, skip user messages to avoid confusion
       if (conversationHistory && Array.isArray(conversationHistory)) {
-        const filteredHistory = conversationHistory.filter(msg => {
-          if (msg.role === 'assistant') {
+        // Only keep the most recent assistant message (if any) to provide minimal context
+        const recentAssistantMessage = conversationHistory
+          .filter(msg => msg.role === 'assistant')
+          .filter(msg => {
             // Filter out success messages from AI responses
             const successMessagePattern = /✅\s*Successfully added|✅\s*Successfully updated|✅\s*Successfully/;
             const systemResponsePattern = /amount:\s*\d+|category:\s*\w+|paymentMethod:\s*\w+|isDisabled:\s*(true|false)/;
             return !successMessagePattern.test(msg.content) && !systemResponsePattern.test(msg.content);
-          }
-          return true; // Keep all user messages
-        });
-        messages.push(...filteredHistory)
+          })
+          .slice(-1); // Only the most recent one
+        
+        messages.push(...recentAssistantMessage);
       }
       
       // Add current user message
       messages.push({ role: 'user', content: message })
       
-      // Call AI API and measure timing
-      const aiApiStart = Date.now();
       const completion = await callOpenRouterAPI(messages);
-      timingMetrics.aiApiCall = Date.now() - aiApiStart;
-      console.log(`⏱️ AI API call took: ${timingMetrics.aiApiCall}ms`);
       
       // Validate the API response structure
       if (!completion || !completion.choices || !Array.isArray(completion.choices) || completion.choices.length === 0) {
@@ -2001,7 +2587,6 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
       }
       
       // Extract SQL queries from AI response (handle multiple)
-      const sqlExtractionStart = Date.now();
       const sqlMatches = aiResponse.match(/```sql\n([\s\S]*?)\n```/g);
       const sqlQueries: string[] = [];
       
@@ -2019,9 +2604,6 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
           console.log(`AI SQL Flow: Query ${i+1}:`, query.substring(0, 100) + '...');
         });
       }
-      
-      timingMetrics.sqlExtraction = Date.now() - sqlExtractionStart;
-      console.log(`⏱️ SQL extraction took: ${timingMetrics.sqlExtraction}ms`);
       
       // Check if AI should have generated SQL but didn't
       const isCreationRequest = message.toLowerCase().includes('create') || 
@@ -2074,8 +2656,6 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
         }
       }
       
-   
-      
       if (sqlQueries.length > 0) {
         console.log('AI SQL Flow: SQL found in response, processing', sqlQueries.length, 'queries');
         
@@ -2090,7 +2670,6 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
         }
         
         // Process all SQL queries
-        const sqlExecutionStart = Date.now();
         const results = [];
         let allSuccessful = true;
         const addedRecords = [];
@@ -2101,7 +2680,16 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
           const sqlQuery = sqlQueries[i];
           console.log(`AI SQL Flow: Processing query ${i + 1}/${sqlQueries.length}:`, sqlQuery);
           
-          const trimmedQuery = sqlQuery.trim().toLowerCase();
+          // Strip comments from the beginning of the query
+          let cleanQuery = sqlQuery.trim();
+          // Remove leading comment lines (lines that start with --)
+          const lines = cleanQuery.split('\n');
+          const nonCommentLines = lines.filter(line => !line.trim().startsWith('--'));
+          cleanQuery = nonCommentLines.join('\n').trim();
+          // Also remove /* */ comments
+          cleanQuery = cleanQuery.replace(/\/\*[\s\S]*?\*\//g, '').trim();
+          
+          const trimmedQuery = cleanQuery.toLowerCase();
           const isCreationRequest = message.toLowerCase().includes('create') || 
                                     message.toLowerCase().includes('add') ||
                                     message.toLowerCase().includes('new');
@@ -2150,7 +2738,7 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
             console.log('AI SQL Flow: INSERT query detected, executing with validation');
             
             let resolvedQuery = sqlQuery;
-            let conversionInfo = null;
+            let conversionInfo: any = null;
             
             // Check for currency conversion if this is an expense creation
             if (trimmedQuery.includes('into expenses')) {
@@ -2160,44 +2748,89 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
               });
               
               if (books.length > 0) {
-                // Extract amount and currency from the original message
-                const amountAndCurrency = extractAmountAndCurrency(message);
+                // Extract ALL amounts and currencies from the original message
+                const allAmountsAndCurrencies = extractAllAmountsAndCurrencies(message);
                 
-                if (amountAndCurrency.amount && amountAndCurrency.currency) {
-                  const detectedCurrency = amountAndCurrency.currency;
-                  const originalAmount = amountAndCurrency.amount;
+                // Extract the amount from this specific SQL query (after UUID(), )
+                // Match patterns like: VALUES (UUID(), 15.00, or VALUES (UUID(), 200,
+                const amountMatch = sqlQuery.match(/VALUES\s*\([^,]+,\s*(\d+(?:\.\d+)?)/i);
+                const sqlAmount = amountMatch ? parseFloat(amountMatch[1]) : null;
+                
+                console.log(`AI SQL Flow: Extracted SQL amount: ${sqlAmount}, Available currencies:`, allAmountsAndCurrencies);
+                
+                if (sqlAmount && allAmountsAndCurrencies.length > 0) {
+                  // Find the currency info for THIS specific amount (match integer part)
+                  const matchingCurrency = allAmountsAndCurrencies.find(ac => 
+                    ac.amount === sqlAmount || ac.amount === Math.floor(sqlAmount)
+                  );
                   
-                  // Find the first book's currency (assuming single book for now)
-                  const firstBook = books[0];
-                  const bookCurrency = firstBook.currency;
-                  
-                  // If currencies don't match, convert the amount
-                  if (detectedCurrency !== bookCurrency) {
-                    console.log(`AI SQL Flow: Currency conversion needed: ${detectedCurrency} ${originalAmount} → ${bookCurrency}`);
+                  if (matchingCurrency) {
+                    const detectedCurrency = matchingCurrency.currency;
+                    const originalAmount = matchingCurrency.amount;
                     
-                    const conversionResult = await convertCurrency(originalAmount, detectedCurrency, bookCurrency);
+                    // Find the book for this expense by extracting categoryId from the SQL
+                    let bookCurrency = books[0].currency; // Default to first book
                     
-                    if (conversionResult.success) {
-                      console.log(`AI SQL Flow: Converted ${originalAmount} ${detectedCurrency} to ${conversionResult.convertedAmount} ${bookCurrency} (rate: ${conversionResult.exchangeRate})`);
-                      
-                      // Update the SQL query with the converted amount
-                      const amountPattern = new RegExp(`(\\b${originalAmount}\\b)`, 'g');
-                      resolvedQuery = sqlQuery.replace(amountPattern, conversionResult.convertedAmount.toString());
-                      
-                      // Store conversion info for success message
-                      conversionInfo = {
-                        originalAmount,
-                        detectedCurrency,
-                        convertedAmount: conversionResult.convertedAmount,
-                        bookCurrency,
-                        exchangeRate: conversionResult.exchangeRate
-                      };
-                      
-                    } else {
-                      console.log('AI SQL Flow: Currency conversion failed, proceeding with original amount');
-                      // If conversion fails, proceed with original amount but log the error
-                      console.error('Currency conversion failed:', conversionResult.error);
+                    // Extract categoryId - it's typically a quoted UUID in the VALUES
+                    // SQL format: VALUES (UUID(), 15.00, CURDATE(), 'description', 'categoryId', ...)
+                    const categoryIdMatch = sqlQuery.match(/'([0-9a-z]{25,})'/i);
+                    if (categoryIdMatch) {
+                      const categoryId = categoryIdMatch[1];
+                      console.log(`AI SQL Flow: Found categoryId: ${categoryId}`);
+                      // Find which book this category belongs to
+                      try {
+                        const category = await prisma.category.findUnique({
+                          where: { id: categoryId },
+                          include: { book: true }
+                        });
+                        if (category?.book) {
+                          bookCurrency = category.book.currency;
+                          console.log(`AI SQL Flow: Category belongs to book with currency: ${bookCurrency}`);
+                        }
+                      } catch (e) {
+                        console.log(`AI SQL Flow: Could not find category, using default book currency`);
+                      }
                     }
+                    
+                    // If currencies don't match, convert the amount
+                    if (detectedCurrency !== bookCurrency) {
+                      console.log(`AI SQL Flow: Currency conversion needed: ${detectedCurrency} ${originalAmount} → ${bookCurrency}`);
+                      
+                      const conversionResult = await convertCurrency(originalAmount, detectedCurrency, bookCurrency);
+                      
+                      if (conversionResult.success) {
+                        console.log(`AI SQL Flow: Converted ${originalAmount} ${detectedCurrency} to ${conversionResult.convertedAmount} ${bookCurrency} (rate: ${conversionResult.exchangeRate})`);
+                        
+                        // Update the SQL query with the converted amount
+                        // Replace the amount in VALUES (UUID(), AMOUNT, ...) format
+                        const sqlAmountStr = sqlAmount.toString();
+                        const sqlAmountWithDecimal = sqlAmount.toFixed(2);
+                        // Try both formats: 15.00 or 15
+                        resolvedQuery = sqlQuery
+                          .replace(new RegExp(`(VALUES\\s*\\([^,]+,\\s*)${sqlAmountWithDecimal}`, 'i'), `$1${conversionResult.convertedAmount.toFixed(2)}`)
+                          .replace(new RegExp(`(VALUES\\s*\\([^,]+,\\s*)${sqlAmountStr}(?!\\.\\d)`, 'i'), `$1${conversionResult.convertedAmount.toFixed(2)}`);
+                        
+                        console.log(`AI SQL Flow: Original query: ${sqlQuery}`);
+                        console.log(`AI SQL Flow: Resolved query: ${resolvedQuery}`);
+                        
+                        // Store conversion info for success message
+                        conversionInfo = {
+                          originalAmount,
+                          detectedCurrency,
+                          convertedAmount: conversionResult.convertedAmount,
+                          bookCurrency,
+                          exchangeRate: conversionResult.exchangeRate
+                        };
+                        
+                      } else {
+                        console.log('AI SQL Flow: Currency conversion failed, proceeding with original amount');
+                        console.error('Currency conversion failed:', conversionResult.error);
+                      }
+                    } else {
+                      console.log(`AI SQL Flow: No conversion needed, currencies match: ${detectedCurrency} = ${bookCurrency}`);
+                    }
+                  } else {
+                    console.log(`AI SQL Flow: No matching currency found for amount ${sqlAmount}`);
                   }
                 }
               }
@@ -2206,10 +2839,17 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
             // AI now generates SQL with correct IDs directly from RAG memory
             // No need to resolve book names - AI handles this through intelligence
             
-            // Execute INSERT query directly with validation
-            console.log('AI SQL Flow: Executing SQL query:', sqlQuery);
-            const executionResult = await executeDirectSQLWithValidation(sqlQuery);
+            // Execute INSERT query directly with validation (use resolvedQuery if currency was converted)
+            const queryToExecute = resolvedQuery || sqlQuery;
+            console.log('AI SQL Flow: Executing SQL query:', queryToExecute);
+            const executionResult = await executeDirectSQLWithValidation(queryToExecute);
             console.log('AI SQL Flow: Execution result:', executionResult);
+            
+            // If query was skipped (e.g., suspicious book name), don't add to results, just continue
+            if ((executionResult as any).skipped) {
+              console.log('AI SQL Flow: Query was skipped, continuing with other queries');
+              continue;
+            }
             
             results.push(executionResult);
             
@@ -2233,15 +2873,59 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
                 console.log('Could not fetch user data for success message formatting:', error);
               }
 
-              // Add one success message per executed SQL query
-              // Each query in sqlQueries array is already a separate INSERT statement
-              const successMessage = formatSuccessMessage(sqlQuery, executionResult, userBooks, categories);
-              
-              // Add conversion info if available for display
-              if (conversionInfo) {
-                addedRecords.push(`${successMessage} (converted from ${conversionInfo.originalAmount} ${conversionInfo.detectedCurrency} at rate ${conversionInfo.exchangeRate})`);
+              // Handle bulk INSERTs into categories specially
+              if (trimmedQuery.includes('into categories') && executionResult.rowCount && executionResult.rowCount > 1) {
+                // For bulk category inserts, query the recently added categories
+                try {
+                  // Extract bookId from the query (works for both VALUES and SELECT inserts)
+                  const bookIdMatch = sqlQuery.match(/bookId\s*=\s*['"]([^'"]+)['"]/i) || 
+                                    sqlQuery.match(/bookId\s*,\s*['"]([^'"]+)['"]/i) ||
+                                    sqlQuery.match(/,\s*['"]([^'"]+)['"]\s*,/i); // For SELECT inserts where bookId is a literal value
+                  if (bookIdMatch) {
+                    const bookId = bookIdMatch[1];
+                    // Query recently added categories (within last minute) for this book
+                    const recentCategories = await prisma.category.findMany({
+                      where: {
+                        bookId: bookId,
+                        isDisabled: false,
+                        createdAt: {
+                          gte: new Date(Date.now() - 60000) // Last minute
+                        }
+                      },
+                      orderBy: { createdAt: 'desc' },
+                      take: executionResult.rowCount
+                    });
+                    
+                    // Add each category as a separate success message
+                    recentCategories.forEach(category => {
+                      const book = userBooks.find(b => b.id === bookId);
+                      const bookName = book ? book.name : 'Unknown book';
+                      addedRecords.push(`${category.name} category added (name: ${category.name}, description: ${category.description || 'No description'}, book: ${bookName}, icon: ${category.icon || 'Default'})`);
+                    });
+                  } else {
+                    // Fallback: add generic message for bulk insert
+                    addedRecords.push(`${executionResult.rowCount} categories added successfully`);
+                  }
+                } catch (error) {
+                  console.log('Could not query recently added categories:', error);
+                  addedRecords.push(`${executionResult.rowCount} categories added successfully`);
+                }
               } else {
-                addedRecords.push(successMessage);
+                // Add one success message per executed SQL query
+                // Each query in sqlQueries array is already a separate INSERT statement
+                const successMessage = formatSuccessMessage(sqlQuery, executionResult, userBooks, categories);
+                
+                // Handle both single messages and arrays of messages
+                const messages = Array.isArray(successMessage) ? successMessage : [successMessage];
+                
+                // Add conversion info if available for display
+                if (conversionInfo) {
+                  messages.forEach(msg => {
+                    addedRecords.push(`${msg} (converted from ${conversionInfo.originalAmount} ${conversionInfo.detectedCurrency} at rate ${conversionInfo.exchangeRate})`);
+                  });
+                } else {
+                  addedRecords.push(...messages);
+                }
               }
             } else {
               allSuccessful = false;
@@ -2278,7 +2962,9 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
               }
 
               // Add success message for UPDATE operation
-              updatedRecords.push(formatSuccessMessage(sqlQuery, executionResult, userBooks, categories));
+              const updateMessage = formatSuccessMessage(sqlQuery, executionResult, userBooks, categories);
+              const updateMessages = Array.isArray(updateMessage) ? updateMessage : [updateMessage];
+              updatedRecords.push(...updateMessages);
             } else {
               allSuccessful = false;
             }
@@ -2312,9 +2998,6 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
             allSuccessful = false;
           }
         }
-        
-        timingMetrics.sqlExecution = Date.now() - sqlExecutionStart;
-        console.log(`⏱️ SQL execution took: ${timingMetrics.sqlExecution}ms`);
         
         // Generate comprehensive response
         if (allSuccessful) {
@@ -2388,7 +3071,7 @@ IMPORTANT: Your ONLY job is to generate SQL queries in code blocks. The system w
             .map(r => r.error || 'Unknown error')
             .join('; ');
           
-          const finalMessage = `❌ Some operations failed: ${errorMessages}`;
+          const finalMessage = ` ${errorMessages}`;
           
           // Save conversation to database
           try {
@@ -2528,19 +3211,21 @@ Use this context to:
       { role: 'system', content: systemPrompt }
     ]
     
-    // Add conversation history if provided
-    // Filter out success messages from previous AI responses to prevent the AI from learning to generate them
+    // Add conversation history if provided - but be very selective
+    // Only include the most recent assistant response for context, skip user messages to avoid confusion
     if (conversationHistory && Array.isArray(conversationHistory)) {
-      const filteredHistory = conversationHistory.filter(msg => {
-        if (msg.role === 'assistant') {
+      // Only keep the most recent assistant message (if any) to provide minimal context
+      const recentAssistantMessage = conversationHistory
+        .filter(msg => msg.role === 'assistant')
+        .filter(msg => {
           // Filter out success messages from AI responses
           const successMessagePattern = /✅\s*Successfully added|✅\s*Successfully updated|✅\s*Successfully/;
           const systemResponsePattern = /amount:\s*\d+|category:\s*\w+|paymentMethod:\s*\w+|isDisabled:\s*(true|false)/;
           return !successMessagePattern.test(msg.content) && !systemResponsePattern.test(msg.content);
-        }
-        return true; // Keep all user messages
-      });
-      messages.push(...filteredHistory)
+        })
+        .slice(-1); // Only the most recent one
+      
+      messages.push(...recentAssistantMessage);
     }
     
     // Add current user message
@@ -2574,77 +3259,19 @@ Use this context to:
         // Remove SQL from response and show results only
         aiResponse = aiResponse.replace(/```sql\n([\s\S]*?)\n```/g, '');
         
-        // Get user's books and categories for ID resolution
-        let userBooks: any[] = [];
-        let categories: any[] = [];
-        try {
-          userBooks = await prisma.book.findMany({
-            where: { userId: session.user.id, isArchived: false }
-          });
-          
-          const bookIds = userBooks.map(b => b.id);
-          if (bookIds.length > 0) {
-            categories = await prisma.category.findMany({
-              where: { bookId: { in: bookIds }, isDisabled: false }
-            });
-          }
-        } catch (error) {
-          console.log('Could not fetch user data for ID resolution:', error);
-        }
-        
-        // Format results with ID resolution
-        let cleanResponse = `📊 Found ${executionResult.rowCount} records`;
-        
+        // Format results with natural language using AI
         if (executionResult.data && Array.isArray(executionResult.data) && executionResult.data.length > 0) {
-          // Resolve IDs to names in the data
-          const resolvedData = executionResult.data.map(item => {
-            const resolved: any = { ...item };
-            
-            // Resolve bookId to book name
-            if (resolved.bookId && userBooks.length > 0) {
-              const book = userBooks.find(b => b.id === resolved.bookId);
-              if (book) {
-                resolved.book = book.name;
-                delete resolved.bookId;
-              }
-            }
-            
-            // Resolve categoryId to category name
-            if (resolved.categoryId && categories.length > 0) {
-              const category = categories.find(c => c.id === resolved.categoryId);
-              if (category) {
-                resolved.category = category.name;
-                delete resolved.categoryId;
-              }
-            }
-            
-            // Also handle common field names from JOINs
-            if (resolved.book_name) {
-              resolved.book = resolved.book_name;
-              delete resolved.book_name;
-            }
-            if (resolved.category_name) {
-              resolved.category = resolved.category_name;
-              delete resolved.category_name;
-            }
-            
-            // Remove internal fields
-            delete resolved.id;
-            delete resolved.userId;
-            delete resolved.isDisabled;
-            delete resolved.isArchived;
-            delete resolved.createdAt;
-            delete resolved.updatedAt;
-            
-            return resolved;
-          });
+          // Use the same formatting function as the main flow
+          const selectResults = [{
+            query: generatedQuery,
+            data: executionResult.data,
+            rowCount: executionResult.rowCount
+          }];
           
-          // Format the first few results
-          const sampleData = resolvedData.slice(0, 3);
-          cleanResponse += `:\n\`\`\`json\n${JSON.stringify(sampleData, null, 2)}\n\`\`\``;
+          aiResponse = await formatSelectResultsWithAI(selectResults, message, session.user.id, conversationHistory);
+        } else {
+          aiResponse = `📊 Found ${executionResult.rowCount} records, but no data to display.`;
         }
-        
-        aiResponse = cleanResponse;
       } else {
         aiResponse = aiResponse.replace(/```sql\n([\s\S]*?)\n```/g, '');
         aiResponse += `\n\n❌ ${executionResult.error}`;
@@ -2695,19 +3322,6 @@ Use this context to:
       aiResponse = '⚠️ Warning: The AI generated a success message but no database operation was performed. Please ask for a specific operation (e.g., "Create a book called Test" or "Show me all expenses").';
     }
     
-    // Calculate total time
-    timingMetrics.totalTime = Date.now() - timingMetrics.startTime;
-    console.log(`⏱️ Total processing time: ${timingMetrics.totalTime}ms`);
-    console.log('⏱️ Timing breakdown:', JSON.stringify({
-      sessionRetrieval: `${timingMetrics.sessionRetrieval}ms`,
-      userContextBuilding: `${timingMetrics.userContextBuilding}ms`,
-      ragContext: `${timingMetrics.ragContext}ms`,
-      aiApiCall: `${timingMetrics.aiApiCall}ms`,
-      sqlExtraction: `${timingMetrics.sqlExtraction}ms`,
-      sqlExecution: `${timingMetrics.sqlExecution}ms`,
-      totalTime: `${timingMetrics.totalTime}ms`
-    }, null, 2));
-    
     // Also check if the AI generated a success message with SQL but the SQL was invalid
     if ((fakeSuccessPattern.test(aiResponse) || fakeSystemResponsePattern.test(aiResponse)) && sqlQuery) {
       console.log('AI SQL Flow: AI generated success message with SQL - this is unexpected');
@@ -2724,16 +3338,7 @@ Use this context to:
         relevantDocs: ragContext.relevantDocs,
         userContext: ragContext.userContext
       } : null,
-      requiresConfirmation: false,
-      timingMetrics: {
-        sessionRetrieval: timingMetrics.sessionRetrieval,
-        userContextBuilding: timingMetrics.userContextBuilding,
-        ragContext: timingMetrics.ragContext,
-        aiApiCall: timingMetrics.aiApiCall,
-        sqlExtraction: timingMetrics.sqlExtraction,
-        sqlExecution: timingMetrics.sqlExecution,
-        totalTime: timingMetrics.totalTime
-      }
+      requiresConfirmation: false
     })
   
 }

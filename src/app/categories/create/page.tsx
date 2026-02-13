@@ -128,7 +128,7 @@ function CreateCategoryForm() {
     mutationFn: async ({ categoryId, bookId }: { categoryId: string; bookId: string }) => {
       return await addDefaultCategoryToBook(categoryId, bookId)
     },
-    onSuccess: async (result, variables) => {
+    onSuccess: (result, variables) => {
       if (result?.error) {
         toast({
           title: "Error",
@@ -138,41 +138,22 @@ function CreateCategoryForm() {
       } else if (result?.success) {
         toast({
           title: "Success",
-          description: "Default category added to your book!",
+          description: result.message || "Category added to book successfully!",
         })
-        
-        // Update the local query data to immediately show the category as added
-        queryClient.setQueryData(["default-categories", bookIdFromUrl], (oldData: any) => {
-          if (!oldData) return oldData
-          
-          // Find the default category that was added
-          const addedCategory = oldData.defaultCategories.find((cat: any) => cat.id === variables.categoryId)
-          if (addedCategory) {
-            // Add it to bookCategories
-            return {
-              ...oldData,
-              bookCategories: [...(oldData.bookCategories || []), {
-                ...addedCategory,
-                bookId: variables.bookId,
-                isDefault: false,
-                id: `temp-${Date.now()}`, // Temporary ID until refetch
-              }]
-            }
-          }
-          return oldData
+        // Refresh the default categories data to show updated status
+        queryClient.invalidateQueries({ queryKey: ["default-categories", bookIdFromUrl] })
+      } else {
+        toast({
+          title: "Error",
+          description: "Unexpected response from server",
+          variant: "destructive",
         })
-        
-        // Also invalidate to ensure data consistency after a short delay
-        setTimeout(() => {
-          queryClient.invalidateQueries({ queryKey: ["categories"] })
-        }, 1000)
-        // Don't redirect - let user add multiple categories
       }
     },
     onError: (error) => {
       toast({
         title: "Error",
-        description: error.message || "Failed to add default category",
+        description: error.message || "Failed to add category to book",
         variant: "destructive",
       })
     },

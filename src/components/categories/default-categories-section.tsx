@@ -1,9 +1,10 @@
 "use client"
 
 import { Button } from "@/components/ui/button"
-import { addDefaultCategoryToBook } from "@/actions/category-actions"
 import { toast } from "@/components/ui/use-toast"
 import { Plus } from "lucide-react"
+import { addDefaultCategoryToBook } from "@/actions/category-actions"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 
 interface DefaultCategoriesSectionProps {
   defaultCategories: any[]
@@ -11,6 +12,44 @@ interface DefaultCategoriesSectionProps {
 }
 
 export function DefaultCategoriesSection({ defaultCategories, bookId }: DefaultCategoriesSectionProps) {
+  const queryClient = useQueryClient()
+
+  const addDefaultCategoryMutation = useMutation({
+    mutationFn: async ({ categoryId, bookId }: { categoryId: string; bookId: string }) => {
+      return await addDefaultCategoryToBook(categoryId, bookId)
+    },
+    onSuccess: (result, variables) => {
+      if (result?.error) {
+        toast({
+          title: "Error",
+          description: result.error,
+          variant: "destructive",
+        })
+      } else if (result?.success) {
+        toast({
+          title: "Success",
+          description: result.message || "Category added to book successfully!",
+        })
+        // Refresh the data to show updated status
+        queryClient.invalidateQueries({ queryKey: ["categories"] })
+        queryClient.invalidateQueries({ queryKey: ["default-categories", bookId] })
+      } else {
+        toast({
+          title: "Error",
+          description: "Unexpected response from server",
+          variant: "destructive",
+        })
+      }
+    },
+    onError: (error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to add category to book",
+        variant: "destructive",
+      })
+    },
+  })
+
   const handleAddToBook = async (categoryId: string) => {
     if (!bookId) {
       toast({
@@ -21,21 +60,10 @@ export function DefaultCategoriesSection({ defaultCategories, bookId }: DefaultC
       return
     }
 
-    const result = await addDefaultCategoryToBook(categoryId, bookId)
-    if (result.error) {
-      toast({
-        title: "Error",
-        description: result.error,
-        variant: "destructive",
-      })
-    } else {
-      toast({
-        title: "Success",
-        description: "Category added to your book successfully!",
-      })
-      // Refresh the page to show the updated categories
-      window.location.reload()
-    }
+    addDefaultCategoryMutation.mutate({
+      categoryId,
+      bookId,
+    })
   }
 
   if (defaultCategories.length === 0) {
@@ -81,9 +109,10 @@ export function DefaultCategoriesSection({ defaultCategories, bookId }: DefaultC
                         variant="outline"
                         size="sm"
                         className="hover:bg-green-100"
+                        disabled={addDefaultCategoryMutation.isPending}
                       >
                         <Plus className="w-4 h-4 mr-1" />
-                        Add to Book
+                        {addDefaultCategoryMutation.isPending ? "Adding..." : "Add to Book"}
                       </Button>
                     ) : (
                       <span className="text-gray-400 text-sm">Select a book to add</span>

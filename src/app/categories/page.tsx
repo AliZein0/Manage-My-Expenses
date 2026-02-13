@@ -8,11 +8,14 @@ import { Badge } from "@/components/ui/badge"
 import { AppLayout } from "@/components/layout/app-layout"
 import { CategoryIcon } from "@/components/ui/category-icon"
 import { Eye, EyeOff, Check } from "lucide-react"
+import { CategoriesPageClient } from "@/components/categories/categories-page-client"
 
 interface CategoriesPageProps {
   searchParams: {
     bookId?: string
     showDisabled?: string
+    success?: string
+    error?: string
   }
 }
 
@@ -22,9 +25,11 @@ export default async function CategoriesPage({ searchParams }: CategoriesPagePro
 
   const bookId = searchParams.bookId
   const showDisabled = searchParams.showDisabled === "true"
+  const successMessage = searchParams.success
+  const errorMessage = searchParams.error
 
   // If bookId is provided, get the book details
-  let book = null
+  let book: any = null
   if (bookId) {
     const bookResult = await getBookById(bookId)
     if (bookResult.error) {
@@ -93,7 +98,8 @@ export default async function CategoriesPage({ searchParams }: CategoriesPagePro
   }
 
   return (
-    <AppLayout>
+    <CategoriesPageClient successMessage={successMessage} errorMessage={errorMessage}>
+      <AppLayout>
       <div className="space-y-6">
         <div className="flex items-center justify-between bg-gradient-to-r from-green-50 to-emerald-50 p-6 rounded-lg border border-green-100">
           <div>
@@ -184,15 +190,23 @@ export default async function CategoriesPage({ searchParams }: CategoriesPagePro
                                 <form action={async (formData: FormData) => {
                                   "use server"
                                   const categoryId = formData.get("categoryId") as string
-                                  const bookIdValue = formData.get("bookId") as string
+                                  const bookId = formData.get("bookId") as string
+                                  
                                   const { addDefaultCategoryToBook } = await import("@/actions/category-actions")
-                                  await addDefaultCategoryToBook(categoryId, bookIdValue)
-                                  // Revalidate the page
-                                  const { revalidatePath } = await import("next/cache")
-                                  revalidatePath("/categories")
+                                  const result = await addDefaultCategoryToBook(categoryId, bookId)
+                                  
+                                  if (result.error) {
+                                    const { redirect } = await import("next/navigation")
+                                    redirect(`/categories?bookId=${bookId}&error=${encodeURIComponent(result.error)}`)
+                                  } else {
+                                    const { redirect } = await import("next/navigation")
+                                    redirect(`/categories?bookId=${bookId}&success=${encodeURIComponent(result.message || "Category added successfully")}`)
+                                  }
                                 }}>
                                   <input type="hidden" name="categoryId" value={category.id} />
                                   <input type="hidden" name="bookId" value={bookId} />
+                                  <input type="hidden" name="categoryName" value={category.name} />
+                                  <input type="hidden" name="bookName" value={book?.name || ''} />
                                   <Button
                                     type="submit"
                                     variant="outline"
@@ -356,5 +370,6 @@ export default async function CategoriesPage({ searchParams }: CategoriesPagePro
         </div>
       </div>
     </AppLayout>
+    </CategoriesPageClient>
   )
 }

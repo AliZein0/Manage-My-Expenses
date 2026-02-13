@@ -15,10 +15,33 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [error, setError] = useState("")
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
+    setError("") // Clear any previous error
+
+    // Client-side validation
+    if (!email.trim()) {
+      setError("Email is required")
+      setIsLoading(false)
+      return
+    }
+
+    if (!password.trim()) {
+      setError("Password is required")
+      setIsLoading(false)
+      return
+    }
+
+    // Basic email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(email)) {
+      setError("Please enter a valid email address")
+      setIsLoading(false)
+      return
+    }
 
     console.log('Attempting login with:', email, '***') // Debug log
 
@@ -34,13 +57,10 @@ export default function LoginPage() {
 
     if (result?.error) {
       console.error('Login error:', result.error) // Debug log
-      toast({
-        title: "Login failed",
-        description: "Please check your credentials and try again.",
-        variant: "destructive",
-      })
+      setError(result.error)
     } else {
       console.log('Login successful!') // Debug log
+      setError("") // Clear any previous error
       toast({
         title: "Welcome back!",
         description: "You have successfully logged in.",
@@ -59,6 +79,11 @@ export default function LoginPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {error && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md">
+              <p className="text-sm text-red-600">{error}</p>
+            </div>
+          )}
           <form onSubmit={handleLogin} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
